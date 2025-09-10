@@ -1,0 +1,2573 @@
+-- ItemESP (clean) - Toggle ON/OFF with F2 — NO UI
+-- Paste this into your executor (requires Drawing API).
+-- Press F2 to toggle the Item ESP. Numpad + / - to change distance.
+-- Uses weak tables, drawing pool, jittered scans to reduce patterning.
+
+-- Services & basics
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local workspace = workspace
+local LocalPlayer = Players.LocalPlayer
+local RS = RunService
+local UInput = UserInputService
+
+-- Ensure camera ref
+local function getCamera()
+    local c = workspace.CurrentCamera
+    if not c then repeat RS.RenderStepped:Wait(); c = workspace.CurrentCamera until c end
+    return c
+end
+
+-- Basic ItemESP table
+local ItemESP = {
+    enabled = true,            -- starts enabled
+    showCIds = false,
+    textPool = {},
+    poolIndex = 1,
+    maxTexts = 300,
+    dynamicExtras = {},
+    ESPStorage = setmetatable({}, { __mode = "k" }),
+    itemStateCache = setmetatable({}, { __mode = "k" }),
+    lastScan = 0,
+    deathDetected = false,
+    respawnWait = 0
+}
+
+-- Color presets (minimal)
+local COLOR_PRESETS = {
+    ["Default Pink"] = Color3.fromRGB(255, 0, 127),
+    ["Default Cyan"] = Color3.fromRGB(0, 255, 255),
+    ["Default Yellow"] = Color3.fromRGB(255, 255, 0)
+}
+
+-- Put your full ITEM_DATABASE here (short example included). Replace/extend as needed.
+local ITEM_DATABASE = {
+    [1] = {name = "S&W .44 Magnum", type = "WEAPON", color = Color3.fromRGB(255, 0, 127)},
+    [234] = {name = "MK 4", type = "WEAPON", color = Color3.fromRGB(255, 20, 147)},
+    [227] = {name = "M1911", type = "WEAPON", color = Color3.fromRGB(255, 105, 180)},
+    [334] = {name = "Remington 1894 Old", type = "WEAPON", color = Color3.fromRGB(255, 69, 162)},
+    [344] = {name = "Remington 1894", type = "WEAPON", color = Color3.fromRGB(255, 80, 170)},
+    [445] = {name = "Weapon Repair Kit", type = "WEAPON", color = Color3.fromRGB(255, 50, 140)},
+    [141] = {name = "FNX 45", type = "WEAPON", color = Color3.fromRGB(255, 0, 100)},
+    [330] = {name = "Recurve Bow", type = "WEAPON", color = Color3.fromRGB(255, 85, 160)},
+    [272] = {name = "Mossberg 500", type = "WEAPON", color = Color3.fromRGB(255, 30, 120)},
+    [231] = {name = "M9", type = "WEAPON", color = Color3.fromRGB(255, 10, 140)},
+    [5] = {name = "AR-15", type = "WEAPON", color = Color3.fromRGB(255, 40, 110)},
+    [236] = {name = "MP-133", type = "WEAPON", color = Color3.fromRGB(255, 60, 150)},
+    [348] = {name = "10/22 Takedown", type = "WEAPON", color = Color3.fromRGB(255, 90, 175)},
+    [300] = {name = "P226", type = "WEAPON", color = Color3.fromRGB(255, 25, 135)},
+    [346] = {name = "Remington 700", type = "WEAPON", color = Color3.fromRGB(255, 35, 145)},
+    [269] = {name = "Molotov", type = "WEAPON", color = Color3.fromRGB(255, 45, 155)},
+    [435] = {name = "UZI", type = "WEAPON", color = Color3.fromRGB(255, 55, 165)},
+    [163] = {name = "Glock", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [155] = {name = "Fragmented Grenade", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [431] = {name = "UMP-45", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [226] = {name = "M110K", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [396] = {name = "Smoke Granade", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [237] = {name = "MP5", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [271] = {name = "Mosin Nagant", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [158] = {name = "G36K", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [229] = {name = "M40A1", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [228] = {name = "M249", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [142] = {name = "FAMAS", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [416] = {name = "TEC9", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [235] = {name = "MK47 Mutant", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+    [113] = {name = "Crossbow", type = "WEAPON", color = Color3.fromRGB(255, 65, 175)},
+
+    [11] = {name = "12 Gauge", type = "AMMO", color = Color3.fromRGB(255, 255, 0)},
+    [16] = {name = ".45 ACP", type = "AMMO", color = Color3.fromRGB(255, 215, 0)},
+    [15] = {name = ".44 Magnum Ammo", type = "AMMO", color = Color3.fromRGB(255, 200, 0)},
+    [13] = {name = ".22 LR", type = "AMMO", color = Color3.fromRGB(255, 185, 0)},
+    [20] = {name = "9mm Parabellum", type = "AMMO", color = Color3.fromRGB(255, 170, 0)},
+    [14] = {name = ".308 Win", type = "AMMO", color = Color3.fromRGB(255, 155, 0)},
+    [12] = {name = "Rem .223", type = "AMMO", color = Color3.fromRGB(255, 140, 0)},
+    [21] = {name = "Arrow", type = "AMMO", color = Color3.fromRGB(255, 125, 0)},
+    [17] = {name = ".50 BMG", type = "AMMO", color = Color3.fromRGB(255, 125, 0)},
+
+    [97] = {name = "Can Opener", type = "MELEE", color = Color3.fromRGB(0, 255, 255)},
+    [409] = {name = "Fillet Knife", type = "MELEE", color = Color3.fromRGB(64, 224, 255)},
+    [216] = {name = "Kitchen Knife", type = "MELEE", color = Color3.fromRGB(0, 191, 255)},
+    [451] = {name = "Screwdriver", type = "MELEE", color = Color3.fromRGB(0, 206, 209)},
+    [385] = {name = "Shovel", type = "MELEE", color = Color3.fromRGB(72, 209, 204)},
+    [114] = {name = "Crowbar", type = "MELEE", color = Color3.fromRGB(95, 158, 160)},
+    [149] = {name = "Flashlight", type = "MELEE", color = Color3.fromRGB(0, 255, 200)},
+    [189] = {name = "Hand Saw", type = "MELEE", color = Color3.fromRGB(32, 178, 170)},
+    [102] = {name = "Combat Knife", type = "MELEE", color = Color3.fromRGB(0, 225, 225)},
+    [240] = {name = "Machete", type = "MELEE", color = Color3.fromRGB(0, 240, 240)},
+    [144] = {name = "Fire Axe", type = "MELEE", color = Color3.fromRGB(0, 240, 240)},
+    [84] = {name = "Camp Axe", type = "MELEE", color = Color3.fromRGB(255, 15, 130)},
+
+    [89] = {name = "Potato", type = "FOOD", color = Color3.fromRGB(255, 165, 0)},
+    [320] = {name = "Henry's Rabbit Cereal", type = "FOOD", color = Color3.fromRGB(255, 140, 0)},
+    [94] = {name = "King Potatoes", type = "FOOD", color = Color3.fromRGB(255, 69, 0)},
+    [310] = {name = "Na Na Na Peas", type = "FOOD", color = Color3.fromRGB(255, 127, 80)},
+    [423] = {name = "Tomato Soup", type = "FOOD", color = Color3.fromRGB(255, 99, 71)},
+    [48] = {name = "Rootin' Tootin' Beans", type = "FOOD", color = Color3.fromRGB(255, 160, 122)},
+    [100] = {name = "Coffee Can", type = "FOOD", color = Color3.fromRGB(255, 140, 0)},
+    [123] = {name = "Dirty Water", type = "FOOD", color = Color3.fromRGB(255, 180, 100)},
+    [136] = {name = "Energy Drink", type = "FOOD", color = Color3.fromRGB(255, 120, 50)},
+    [408] = {name = "Stagnant Water", type = "FOOD", color = Color3.fromRGB(255, 190, 80)},
+    [99] = {name = "Coffee", type = "FOOD", color = Color3.fromRGB(255, 150, 70)},
+    [308] = {name = "Mama's Peaches", type = "FOOD", color = Color3.fromRGB(255, 210, 120)},
+    [324] = {name = "Purified Water", type = "FOOD", color = Color3.fromRGB(255, 200, 150)},
+    [399] = {name = "Soda", type = "FOOD", color = Color3.fromRGB(255, 130, 40)},
+    [239] = {name = "MRE", type = "FOOD", color = Color3.fromRGB(255, 100, 30)},
+    [77] = {name = "Bread", type = "FOOD", color = Color3.fromRGB(255, 185, 110)},
+    [75] = {name = "Cranberry Juice", type = "FOOD", color = Color3.fromRGB(255, 105, 60)},
+    [101] = {name = "Cola", type = "FOOD", color = Color3.fromRGB(255, 135, 45)},
+    [412] = {name = "Sugar Pack", type = "FOOD", color = Color3.fromRGB(255, 175, 90)},
+    [402] = {name = "Spam Can", type = "FOOD", color = Color3.fromRGB(255, 145, 55)},
+    [428] = {name = "Fishy Frank Tuna", type = "FOOD", color = Color3.fromRGB(255, 155, 65)},
+    [364] = {name = "Mom's Sardines", type = "FOOD", color = Color3.fromRGB(255, 165, 75)},
+    [442] = {name = "Water Purification Tablet", type = "FOOD", color = Color3.fromRGB(255, 185, 95)},
+    [417] = {name = "Tactical Bacon", type = "FOOD", color = Color3.fromRGB(255, 125, 35)},
+    [197] = {name = "Honey Jar", type = "FOOD", color = Color3.fromRGB(255, 195, 105)},
+    [25] = {name = "Apple", type = "FOOD", color = Color3.fromRGB(255, 195, 105)},
+    [411] = {name = "Strawberry jam", type = "FOOD", color = Color3.fromRGB(255, 195, 105)},
+    [351] = {name = "Sam Splint", type = "FOOD", color = Color3.fromRGB(255, 195, 105)},
+
+    [39] = {name = "Bandage", type = "MEDICAL", color = Color3.fromRGB(0, 255, 0)},
+    [262] = {name = "Large Medical Kit", type = "MEDICAL", color = Color3.fromRGB(50, 255, 50)},
+    [124] = {name = "Dressed Bandage", type = "MEDICAL", color = Color3.fromRGB(100, 255, 100)},
+    [24] = {name = "Antibiotics", type = "MEDICAL", color = Color3.fromRGB(75, 255, 75)},
+    [425] = {name = "Tourniquet", type = "MEDICAL", color = Color3.fromRGB(125, 255, 125)},
+    [395] = {name = "Medical Kit", type = "MEDICAL", color = Color3.fromRGB(150, 255, 150)},
+    
+    [80] = {name = "Brown Shoes", type = "CLOTHING", color = Color3.fromRGB(169, 169, 169)},
+    [327] = {name = "Rasta T-Shirt", type = "CLOTHING", color = Color3.fromRGB(128, 128, 128)},
+    [340] = {name = "Red T-Shirt", type = "CLOTHING", color = Color3.fromRGB(192, 192, 192)},
+    [68] = {name = "Blue Checkered T-Shirt", type = "CLOTHING", color = Color3.fromRGB(211, 211, 211)},
+    [59] = {name = "Black Pants", type = "CLOTHING", color = Color3.fromRGB(105, 105, 105)},
+    [169] = {name = "Gray Shirt", type = "CLOTHING", color = Color3.fromRGB(169, 169, 169)},
+    [178] = {name = "Green Checkered Shirt", type = "CLOTHING", color = Color3.fromRGB(128, 128, 128)},
+    [339] = {name = "Red Striped T-Shirt", type = "CLOTHING", color = Color3.fromRGB(192, 192, 192)},
+    [291] = {name = "Blue Jeans", type = "CLOTHING", color = Color3.fromRGB(169, 169, 169)},
+    [79] = {name = "Brown Jeans", type = "CLOTHING", color = Color3.fromRGB(128, 128, 128)},
+    [170] = {name = "Gray Shoes", type = "CLOTHING", color = Color3.fromRGB(169, 169, 169)},
+    [73] = {name = "Blue T-Shirt", type = "CLOTHING", color = Color3.fromRGB(150, 150, 150)},
+    [420] = {name = "Maroon T-Shirt", type = "CLOTHING", color = Color3.fromRGB(180, 180, 180)},
+    [221] = {name = "Light Blue Track Pants", type = "CLOTHING", color = Color3.fromRGB(140, 140, 140)},
+    [71] = {name = "Blue Sneakers", type = "CLOTHING", color = Color3.fromRGB(160, 160, 160)},
+    [67] = {name = "Blue Jeans", type = "CLOTHING", color = Color3.fromRGB(169, 169, 169)},
+    [337] = {name = "Red T-Shirt", type = "CLOTHING", color = Color3.fromRGB(192, 192, 192)},
+    [317] = {name = "Police Shirt", type = "CLOTHING", color = Color3.fromRGB(200, 200, 200)},
+    [117] = {name = "Sheriff Shirt", type = "CLOTHING", color = Color3.fromRGB(185, 185, 185)},
+    [70] = {name = "Blue Shirt", type = "CLOTHING", color = Color3.fromRGB(175, 175, 175)},
+    [168] = {name = "Gray Checkered Shirt", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [477] = {name = "White T-Shirt", type = "CLOTHING", color = Color3.fromRGB(220, 220, 220)},
+    [78] = {name = "Faded Brown Shirt", type = "CLOTHING", color = Color3.fromRGB(165, 165, 165)},
+    [61] = {name = "Black T-Shirt", type = "CLOTHING", color = Color3.fromRGB(128, 128, 128)},
+    [74] = {name = "Blue Track T-Shirt", type = "CLOTHING", color = Color3.fromRGB(145, 145, 145)},
+    [183] = {name = "Green T-Shirt", type = "CLOTHING", color = Color3.fromRGB(160, 160, 160)},
+    [167] = {name = "Gray Jeans", type = "CLOTHING", color = Color3.fromRGB(150, 150, 150)},
+    [27] = {name = "Army Green Shirt", type = "CLOTHING", color = Color3.fromRGB(140, 140, 140)},
+    [335] = {name = "Red Checkered Shirt", type = "CLOTHING", color = Color3.fromRGB(180, 180, 180)},
+    [66] = {name = "Faded Blue T-Shirt", type = "CLOTHING", color = Color3.fromRGB(135, 135, 135)},
+    [55] = {name = "Black Jeans", type = "CLOTHING", color = Color3.fromRGB(110, 110, 110)},
+    [313] = {name = "Pink Fade T-Shirt", type = "CLOTHING", color = Color3.fromRGB(195, 195, 195)},
+    [414] = {name = "Sunset T-Shirt", type = "CLOTHING", color = Color3.fromRGB(175, 175, 175)},
+    [336] = {name = "Red Puffer Jacket", type = "CLOTHING", color = Color3.fromRGB(185, 185, 185)},
+    [186] = {name = "Green Track Pants", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [171] = {name = "Gray Pants", type = "CLOTHING", color = Color3.fromRGB(165, 165, 165)},
+    [374] = {name = "Sink Shirt", type = "CLOTHING", color = Color3.fromRGB(145, 145, 145)},
+    [60] = {name = "Black Suit", type = "CLOTHING", color = Color3.fromRGB(120, 120, 120)},
+    [333] = {name = "Red Gray Hoodie", type = "CLOTHING", color = Color3.fromRGB(175, 175, 175)},
+    [413] = {name = "Dawn T-Shirt", type = "CLOTHING", color = Color3.fromRGB(185, 185, 185)},
+    [72] = {name = "Blue Striped T-Shirt", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [373] = {name = "Scrub Pants", type = "CLOTHING", color = Color3.fromRGB(145, 145, 145)},
+    [192] = {name = "Hazmat Shirt", type = "CLOTHING", color = Color3.fromRGB(190, 190, 190)},
+    [172] = {name = "Gray T-Shirt", type = "CLOTHING", color = Color3.fromRGB(165, 165, 165)},
+    [182] = {name = "Green Sneakers", type = "CLOTHING", color = Color3.fromRGB(135, 135, 135)},
+    [429] = {name = "Tie Dye Shirt", type = "CLOTHING", color = Color3.fromRGB(205, 205, 205)},
+    [53] = {name = "Black Firefighter Coat", type = "CLOTHING", color = Color3.fromRGB(115, 115, 115)},
+    [332] = {name = "Red Firefighter Jacket", type = "CLOTHING", color = Color3.fromRGB(195, 195, 195)},
+    [338] = {name = "Red Sneakers", type = "CLOTHING", color = Color3.fromRGB(185, 185, 185)},
+    [64] = {name = "Black Track Pants", type = "CLOTHING", color = Color3.fromRGB(125, 125, 125)},
+    [180] = {name = "Green Shirt", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [179] = {name = "Green Puffer Jacket", type = "CLOTHING", color = Color3.fromRGB(165, 165, 165)},
+    [69] = {name = "Blue Insulation Coat", type = "CLOTHING", color = Color3.fromRGB(135, 135, 135)},
+    [447] = {name = "White T-Shirt", type = "CLOTHING", color = Color3.fromRGB(215, 215, 215)},
+    [145] = {name = "Firefighter T-Shirt", type = "CLOTHING", color = Color3.fromRGB(175, 175, 175)},
+    [191] = {name = "Hazmat Pants", type = "CLOTHING", color = Color3.fromRGB(195, 195, 195)},
+    [58] = {name = "Black Puffer Jacket", type = "CLOTHING", color = Color3.fromRGB(115, 115, 115)},
+    [65] = {name = "Blue Bomber Jacket", type = "CLOTHING", color = Color3.fromRGB(145, 145, 145)},
+    [419] = {name = "Tan Pants", type = "CLOTHING", color = Color3.fromRGB(185, 185, 185)},
+    [181] = {name = "Green Pants", type = "CLOTHING", color = Color3.fromRGB(165, 165, 165)},
+    [325] = {name = "Purple Sneakers", type = "CLOTHING", color = Color3.fromRGB(175, 175, 175)},
+    [147] = {name = "Firefighter Shirt", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [222] = {name = "Light Gray Hoodie", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [307] = {name = "Pastor Cassock", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [116] = {name = "Dark Gray Hoodie", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [146] = {name = "Firefighter Pants", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [56] = {name = "Black Ski Mask", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [175] = {name = "Green Firefighter Jacket", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [161] = {name = "Ghillie Pants", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [176] = {name = "Green Hoodie", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [292] = {name = "Navy Ski Mask", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+    [162] = {name = "Ghillie Shirt", type = "CLOTHING", color = Color3.fromRGB(155, 155, 155)},
+
+    [264] = {name = "Red Dot Sight", type = "ACCESSORY", color = Color3.fromRGB(0, 0, 255)},
+    [46] = {name = "9V Battery", type = "ACCESSORY", color = Color3.fromRGB(30, 144, 255)},
+    [150] = {name = "Weapon Flashlight", type = "ACCESSORY", color = Color3.fromRGB(0, 100, 255)},
+    [277] = {name = "Green Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(50, 150, 255)},
+    [276] = {name = "Gray Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(70, 130, 255)},
+    [341] = {name = "Vision Red Dot", type = "ACCESSORY", color = Color3.fromRGB(100, 149, 255)},
+    [200] = {name = "Hunting Hat", type = "ACCESSORY", color = Color3.fromRGB(120, 170, 255)},
+    [154] = {name = "Red Football Helmet", type = "ACCESSORY", color = Color3.fromRGB(90, 160, 255)},
+    [103] = {name = "Compass", type = "ACCESSORY", color = Color3.fromRGB(80, 140, 255)},
+    [160] = {name = "Gas Mask", type = "ACCESSORY", color = Color3.fromRGB(110, 180, 255)},
+    [281] = {name = "White Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(60, 120, 255)},
+    [367] = {name = "8x Scope", type = "ACCESSORY", color = Color3.fromRGB(10, 60, 255)},
+    [390] = {name = "Brown Blue Backpack", type = "ACCESSORY", color = Color3.fromRGB(40, 100, 255)},
+    [391] = {name = "Blue Gray Daypack", type = "ACCESSORY", color = Color3.fromRGB(20, 80, 255)},
+    [219] = {name = "Weapon Laser Sight", type = "ACCESSORY", color = Color3.fromRGB(25, 75, 255)},
+    [278] = {name = "Rasta Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(35, 85, 255)},
+    [2] = {name = "ACOG Sight", type = "ACCESSORY", color = Color3.fromRGB(45, 95, 255)},
+    [366] = {name = "16x Scope", type = "ACCESSORY", color = Color3.fromRGB(55, 105, 255)},
+    [275] = {name = "Blue Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(65, 115, 255)},
+    [274] = {name = "Black Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [265] = {name = "Black military helmet", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [153] = {name = "Football helmet", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [288] = {name = "Night Vision L1", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [437] = {name = "Vertical Grip", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [343] = {name = "Reinforced Armor Plate", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [218] = {name = "LPVO", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [315] = {name = "Pistol Suppressor", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [280] = {name = "Red Motorcycle Helmet", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [446] = {name = "Welding Mask", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [297] = {name = "Camo Operator", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+    [268] = {name = "Camo Military Vest", type = "ACCESSORY", color = Color3.fromRGB(75, 125, 255)},
+
+    [135] = {name = "Empty Plastic Bottle", type = "CRAFTING", color = Color3.fromRGB(135, 206, 235)},
+    [132] = {name = "Empty Can", type = "CRAFTING", color = Color3.fromRGB(192, 192, 192)},
+    [133] = {name = "Empty Glass Bottle", type = "CRAFTING", color = Color3.fromRGB(173, 216, 230)},
+    [371] = {name = "Metal Scrap", type = "CRAFTING", color = Color3.fromRGB(105, 105, 105)},
+    [404] = {name = "Sponge", type = "CRAFTING", color = Color3.fromRGB(255, 255, 0)},
+    [134] = {name = "Empty Glass Jar", type = "CRAFTING", color = Color3.fromRGB(240, 248, 255)},
+    [126] = {name = "Duct Tape", type = "CRAFTING", color = Color3.fromRGB(169, 169, 169)},
+    [405] = {name = "Thread Spool", type = "CRAFTING", color = Color3.fromRGB(255, 182, 193)},
+    [92] = {name = "Chemical Light", type = "CRAFTING", color = Color3.fromRGB(0, 255, 127)},
+    [164] = {name = "Glue Bottle", type = "CRAFTING", color = Color3.fromRGB(200, 220, 240)},
+    [51] = {name = "Fuel", type = "CRAFTING", color = Color3.fromRGB(150, 200, 250)},
+    [359] = {name = "Salt Pack", type = "CRAFTING", color = Color3.fromRGB(220, 230, 250)},
+    [187] = {name = "Powder Gun", type = "CRAFTING", color = Color3.fromRGB(180, 210, 240)},
+    [128] = {name = "Electronic Chip", type = "CRAFTING", color = Color3.fromRGB(160, 200, 235)},
+    
+    [389] = {name = "Daypack", type = "BACKPACK", color = Color3.fromRGB(128, 0, 128)},
+    [393] = {name = "Black DayPack", type = "BACKPACK", color = Color3.fromRGB(80, 0, 80)},
+    [394] = {name = "Orange Daypack", type = "BACKPACK", color = Color3.fromRGB(160, 32, 160)},
+    [392] = {name = "Blue Orange Daypack", type = "BACKPACK", color = Color3.fromRGB(140, 20, 140)},
+    [388] = {name = "Black Daypack", type = "BACKPACK", color = Color3.fromRGB(90, 0, 90)},
+    [258] = {name = "Gray Rucksack", type = "BACKPACK", color = Color3.fromRGB(110, 0, 110)},
+    [256] = {name = "Camouflage Backpack", type = "BACKPACK", color = Color3.fromRGB(110, 0, 110)},
+    [261] = {name = "Brown Backpack", type = "BACKPACK", color = Color3.fromRGB(110, 0, 110)},
+    [282] = {name = "Mulepack Black", type = "BACKPACK", color = Color3.fromRGB(110, 0, 110)},
+    [255] = {name = "Black Ruscksack", type = "BACKPACK", color = Color3.fromRGB(110, 0, 110)},
+}
+
+-- Safe Features table (local read of global if present)
+local Features = (rawget(_G, "Features") ~= nil and _G.Features) or {}
+Features.visuals = Features.visuals or {}
+Features.visuals.itemesp = Features.visuals.itemesp or {}
+local itemesp = Features.visuals.itemesp
+
+-- Defaults for filters and distance
+itemesp.enabled = true
+itemesp.distance = itemesp.distance or 250
+itemesp.weapons = itemesp.weapons or { enabled = true, selectedItems = { ["All Firearms"] = true } }
+itemesp.melee = itemesp.melee or { enabled = true, selectedItems = { ["All Melee"] = true } }
+itemesp.ammo = itemesp.ammo or { enabled = true, selectedItems = { ["All Ammo"] = true } }
+itemesp.medical = itemesp.medical or { enabled = true, selectedItems = { ["All Medical"] = true } }
+itemesp.food = itemesp.food or { enabled = true, selectedItems = { ["All Food"] = true } }
+itemesp.accessories = itemesp.accessories or { enabled = true, selectedItems = { ["All Accessories"] = true } }
+itemesp.clothing = itemesp.clothing or { enabled = true }
+itemesp.crafting = itemesp.crafting or { enabled = true }
+itemesp.backpacks = itemesp.backpacks or { enabled = true }
+
+-- RNG seed for jitter
+math.randomseed(tick() % 2^31)
+
+-- Helper: get color by type
+local function getItemColor(itemType)
+    if itemType == "WEAPON" then return COLOR_PRESETS["Default Pink"] end
+    if itemType == "MELEE" then return COLOR_PRESETS["Default Cyan"] end
+    if itemType == "AMMO" then return COLOR_PRESETS["Default Yellow"] end
+    if itemType == "MEDICAL" then return Color3.fromRGB(0,255,0) end
+    if itemType == "FOOD" then return Color3.fromRGB(255,165,0) end
+    if itemType == "CLOTHING" then return Color3.fromRGB(169,169,169) end
+    if itemType == "ACCESSORY" then return Color3.fromRGB(0,0,255) end
+    if itemType == "CRAFTING" then return Color3.fromRGB(135,206,235) end
+    if itemType == "BACKPACK" then return Color3.fromRGB(128,0,128) end
+    return Color3.fromRGB(255,255,255)
+end
+
+-- Filtering logic (simplified, respects Features.visuals.itemesp flags)
+local function shouldShowSpecificItem(itemType, itemName, cId)
+    if not Features or not Features.visuals or not Features.visuals.itemesp then return false end
+    if not Features.visuals.itemesp.enabled then return false end
+    if itemType == "UNKNOWN" then return true end
+
+    local cfg = Features.visuals.itemesp
+    if itemType == "WEAPON" then return cfg.weapons and cfg.weapons.enabled end
+    if itemType == "MELEE" then return cfg.melee and cfg.melee.enabled end
+    if itemType == "AMMO" then return cfg.ammo and cfg.ammo.enabled end
+    if itemType == "MEDICAL" then return cfg.medical and cfg.medical.enabled end
+    if itemType == "FOOD" then return cfg.food and cfg.food.enabled end
+    if itemType == "ACCESSORY" then return cfg.accessories and cfg.accessories.enabled end
+    if itemType == "CLOTHING" then return cfg.clothing end
+    if itemType == "CRAFTING" then return cfg.crafting end
+    if itemType == "BACKPACK" then return cfg.backpacks end
+    return false
+end
+
+-- Secret chat commands (optional)
+local function setupSecretCommands()
+    pcall(function()
+        if LocalPlayer and LocalPlayer.Chatted then
+            LocalPlayer.Chatted:Connect(function(message)
+                local lowerMessage = string.lower(message)
+                if lowerMessage == "/cidm" then ItemESP.showCIds = true end
+                if lowerMessage == "/cidp" then ItemESP.showCIds = false end
+            end)
+        end
+    end)
+end
+
+-- Initialize Drawing text pool
+local function initializeTextPool()
+    local ok, err = pcall(function()
+        for i = 1, ItemESP.maxTexts do
+            local text = Drawing.new("Text")
+            text.Size = 15
+            text.Center = true
+            text.Outline = true
+            text.OutlineColor = Color3.fromRGB(0,0,0)
+            text.Font = 2
+            text.Visible = false
+            ItemESP.textPool[i] = text
+        end
+    end)
+    if not ok then warn("initializeTextPool failed:", err) end
+end
+
+local function getTextFromPool()
+    local text = ItemESP.textPool[ItemESP.poolIndex]
+    ItemESP.poolIndex = ItemESP.poolIndex + 1
+    if ItemESP.poolIndex > ItemESP.maxTexts then ItemESP.poolIndex = 1 end
+    return text
+end
+
+-- Scanning functions (copied from your original code)
+local function universalDeepScan(container, foundSpawns, depth, source)
+    if depth > 8 then return end
+    pcall(function()
+        for _, child in ipairs(container:GetChildren()) do
+            if child and child.Name == "item_spawn" and child:IsA("Part") then
+                for _, config in ipairs(child:GetChildren()) do
+                    if config and config:IsA("Configuration") then
+                        local attributes = config:GetAttributes()
+                        if attributes and attributes.CId then
+                            table.insert(foundSpawns, child)
+                            break
+                        end
+                    end
+                end
+            end
+            if child and (child:IsA("Model") or child:IsA("Folder")) then
+                local groundItems = child:FindFirstChild("GroundItems")
+                if groundItems then
+                    for _, itemSpawn in ipairs(groundItems:GetChildren()) do
+                        if itemSpawn and itemSpawn.Name == "item_spawn" and itemSpawn:IsA("Part") then
+                            table.insert(foundSpawns, itemSpawn)
+                        end
+                    end
+                end
+                universalDeepScan(child, foundSpawns, depth + 1, source)
+            end
+        end
+    end)
+end
+
+local function scanAllLocations()
+    local newExtras = {}
+    pcall(function()
+        local worldAssets = workspace:FindFirstChild("world_assets")
+        if not worldAssets then return end
+        local staticObjects = worldAssets:FindFirstChild("StaticObjects")
+        if not staticObjects then return end
+
+        local function doScan(node)
+            local found = {}
+            universalDeepScan(node, found, 0, tostring(node.Name))
+            for _, s in ipairs(found) do table.insert(newExtras, s) end
+        end
+
+        local buildings = staticObjects:FindFirstChild("Buildings")
+        if buildings then doScan(buildings) end
+        local misc = staticObjects:FindFirstChild("Misc")
+        if misc then doScan(misc) end
+        local poi = staticObjects:FindFirstChild("POI")
+        if poi then doScan(poi) end
+
+        for _, child in ipairs(staticObjects:GetChildren()) do
+            if child and child:IsA("Model") and child.Name ~= "Buildings" and child.Name ~= "Misc" and child.Name ~= "POI" then
+                doScan(child)
+            end
+        end
+
+        for _, child in ipairs(staticObjects:GetChildren()) do
+            if child and child.Name == "item_spawn" and child:IsA("Part") then
+                for _, config in ipairs(child:GetChildren()) do
+                    if config and config:IsA("Configuration") then
+                        local attributes = config:GetAttributes()
+                        if attributes and attributes.CId then table.insert(newExtras, child); break end
+                    end
+                end
+            end
+        end
+    end)
+    return newExtras
+end
+
+local function readAllItemsFromSpawn(itemSpawn)
+    local allItems = {}
+    local hashString = ""
+    pcall(function()
+        for _, config in ipairs(itemSpawn:GetChildren()) do
+            if config and config:IsA("Configuration") then
+                local attributes = config:GetAttributes()
+                local cId = attributes.CId
+                local quantity = attributes.Quantity or 1
+                if cId then
+                    table.insert(allItems, { cId = cId, quantity = quantity })
+                    hashString = hashString .. cId .. ":" .. quantity .. ";"
+                end
+            end
+        end
+    end)
+    return allItems, hashString
+end
+
+-- Core update function (renders text)
+local function updateItemESP()
+    local ok, err = pcall(function()
+        if not Features or not Features.visuals or not Features.visuals.itemesp or not Features.visuals.itemesp.enabled then
+            -- hide everything when disabled
+            for _, esp in pairs(ItemESP.ESPStorage) do
+                if esp and esp.Texts then
+                    for _, textData in ipairs(esp.Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end
+                end
+            end
+            return
+        end
+
+        local Cam = getCamera()
+        local HRP = LocalPlayer and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not HRP then
+            if not ItemESP.deathDetected then
+                ItemESP.deathDetected = true
+                ItemESP.respawnWait = 0
+                for _, esp in pairs(ItemESP.ESPStorage) do
+                    if esp and esp.Texts then for _, textData in ipairs(esp.Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end end
+                end
+                ItemESP.ESPStorage = setmetatable({}, { __mode = "k" })
+                ItemESP.itemStateCache = setmetatable({}, { __mode = "k" })
+            end
+            return
+        else
+            if ItemESP.deathDetected then
+                ItemESP.respawnWait = ItemESP.respawnWait + 1
+                if ItemESP.respawnWait > 60 then ItemESP.deathDetected = false; ItemESP.respawnWait = 0 end
+            end
+        end
+
+        local now = tick()
+        if now - ItemESP.lastScan > 4 then
+            ItemESP.lastScan = now
+            task.spawn(function() ItemESP.dynamicExtras = scanAllLocations() end)
+        end
+
+        local function processItemSpawn(itemSpawn)
+            if not itemSpawn or not itemSpawn.Parent then return end
+            local dist = (itemSpawn.Position - HRP.Position).Magnitude
+            if dist <= (Features.visuals.itemesp.distance or 100) then
+                local allItems, currentHash = readAllItemsFromSpawn(itemSpawn)
+                local lastHash = ItemESP.itemStateCache[itemSpawn]
+                local hasChanged = (lastHash ~= currentHash)
+                if hasChanged then
+                    if ItemESP.ESPStorage[itemSpawn] then
+                        if ItemESP.ESPStorage[itemSpawn].Texts then for _, textData in ipairs(ItemESP.ESPStorage[itemSpawn].Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end end
+                        ItemESP.ESPStorage[itemSpawn] = nil
+                    end
+                    ItemESP.itemStateCache[itemSpawn] = currentHash
+                end
+                if #allItems > 0 then
+                    if not ItemESP.ESPStorage[itemSpawn] then
+                        local espTexts = {}
+                        for j, item in ipairs(allItems) do
+                            local itemData = ITEM_DATABASE[item.cId]
+                            local name, color, isUnknown, itemType
+                            if itemData then
+                                name = itemData.name
+                                if item.quantity > 1 then name = string.format("%s x%d", name, item.quantity) end
+                                itemType = itemData.type
+                                color = getItemColor(itemType)
+                                isUnknown = false
+                            else
+                                if ItemESP.showCIds then name = string.format("Unknown (CId_%d)", item.cId) else name = "Unknown" end
+                                if item.quantity > 1 then name = string.format("%s x%d", name, item.quantity) end
+                                color = Color3.fromRGB(255,255,255)
+                                isUnknown = true
+                                itemType = "UNKNOWN"
+                            end
+                            if shouldShowSpecificItem(itemType, itemData and itemData.name or "Unknown", item.cId) then
+                                local text = getTextFromPool()
+                                if text then
+                                    text.Color = color
+                                    table.insert(espTexts, { Text = text, Name = name, OriginalName = name, Color = color, IsUnknown = isUnknown, CId = item.cId, LastDistance = dist, ItemType = itemType, CleanName = itemData and itemData.name or "Unknown" })
+                                end
+                            end
+                        end
+                        if #espTexts > 0 then ItemESP.ESPStorage[itemSpawn] = { Texts = espTexts } end
+                    end
+
+                    local esp = ItemESP.ESPStorage[itemSpawn]
+                    if esp and esp.Texts and Cam then
+                        local pos, onScreen = Cam:WorldToViewportPoint(itemSpawn.Position)
+                        if onScreen and pos.Z > 0 then
+                            for k, textData in ipairs(esp.Texts) do
+                                if textData and textData.Text then
+                                    if shouldShowSpecificItem(textData.ItemType, textData.CleanName or "Unknown", textData.CId) then
+                                        local yOffset = -20 - (k * 16)
+                                        local currentColor = getItemColor(textData.ItemType)
+                                        textData.Text.Color = currentColor
+                                        local displayName = textData.Name
+                                        if textData.IsUnknown then
+                                            displayName = ItemESP.showCIds and string.format("Unknown (CId_%d)", textData.CId) or "Unknown"
+                                            if textData.OriginalName:find(" x%d+") then
+                                                local quantity = textData.OriginalName:match(" x(%d+)")
+                                                if quantity then displayName = displayName .. " x" .. quantity end
+                                            end
+                                        end
+                                        textData.Text.Text = string.format("%s [%.0fm]", displayName, dist)
+                                        textData.Text.Position = Vector2.new(pos.X, pos.Y + yOffset)
+                                        textData.Text.Visible = true
+                                        textData.LastDistance = dist
+                                    else
+                                        pcall(function() textData.Text.Visible = false end)
+                                    end
+                                end
+                            end
+                        else
+                            for _, textData in ipairs(esp.Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end
+                        end
+                    end
+                else
+                    if ItemESP.ESPStorage[itemSpawn] then
+                        if ItemESP.ESPStorage[itemSpawn].Texts then for _, textData in ipairs(ItemESP.ESPStorage[itemSpawn].Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end end
+                        ItemESP.ESPStorage[itemSpawn] = nil
+                    end
+                    ItemESP.itemStateCache[itemSpawn] = ""
+                end
+            else
+                if ItemESP.ESPStorage[itemSpawn] then
+                    if ItemESP.ESPStorage[itemSpawn].Texts then for _, textData in ipairs(ItemESP.ESPStorage[itemSpawn].Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end end
+                    ItemESP.ESPStorage[itemSpawn] = nil
+                end
+            end
+        end
+
+        -- cleanup orphans
+        local toRemove = {}
+        for itemSpawn, esp in pairs(ItemESP.ESPStorage) do
+            if not itemSpawn or not itemSpawn.Parent then
+                if esp and esp.Texts then for _, textData in ipairs(esp.Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end end
+                table.insert(toRemove, itemSpawn)
+            end
+        end
+        for _, obj in ipairs(toRemove) do ItemESP.ESPStorage[obj] = nil; ItemESP.itemStateCache[obj] = nil end
+
+        for _, itemSpawn in ipairs(ItemESP.dynamicExtras) do if itemSpawn and itemSpawn.Parent then processItemSpawn(itemSpawn) end end
+    end)
+    if not ok then warn("ItemESP update error:", err) end
+end
+
+-- Numpad + / - distance controls
+if UInput then
+    UInput.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        pcall(function()
+            if input.KeyCode == Enum.KeyCode.KeypadPlus then
+                Features.visuals.itemesp.distance = math.min((Features.visuals.itemesp.distance or 100) + 25, 500)
+                print("ItemESP distance:", Features.visuals.itemesp.distance)
+            elseif input.KeyCode == Enum.KeyCode.KeypadMinus then
+                Features.visuals.itemesp.distance = math.max((Features.visuals.itemesp.distance or 100) - 25, 25)
+                print("ItemESP distance:", Features.visuals.itemesp.distance)
+            end
+        end)
+    end)
+end
+
+-- Initial scan and jittered rescan loop
+local function startInitialScanAndLoop()
+    pcall(function() ItemESP.dynamicExtras = scanAllLocations() end)
+    task.spawn(function()
+        while true do
+            task.wait(3 + (math.random() * 2)) -- 3-5s jitter
+            local ok, newList = pcall(scanAllLocations)
+            if ok and newList then ItemESP.dynamicExtras = newList end
+        end
+    end)
+end
+
+-- Toggle with F2: ON/OFF (no UI)
+UInput.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.F2 then
+        Features.visuals.itemesp.enabled = not (Features.visuals.itemesp.enabled)
+        ItemESP.enabled = Features.visuals.itemesp.enabled
+        if not ItemESP.enabled then
+            -- hide all texts immediately
+            for _, esp in pairs(ItemESP.ESPStorage) do
+                if esp and esp.Texts then
+                    for _, textData in ipairs(esp.Texts) do if textData and textData.Text then pcall(function() textData.Text.Visible = false end) end end
+                end
+            end
+            print("ItemESP: OFF")
+        else
+            print("ItemESP: ON")
+        end
+    end
+end)
+
+-- Cleanup on leaving
+Players.PlayerRemoving:Connect(function(p)
+    if p == LocalPlayer then
+        for _, esp in pairs(ItemESP.ESPStorage) do
+            if esp and esp.Texts then for _, t in ipairs(esp.Texts) do if t and t.Text then pcall(function() t.Text.Visible = false end) end end end
+        end
+    end
+end)
+
+-- Initialize
+pcall(function()
+    initializeTextPool()
+    setupSecretCommands()
+    startInitialScanAndLoop()
+end)
+
+-- RenderStepped update
+RS.RenderStepped:Connect(function()
+    pcall(function()
+        if ItemESP.enabled then updateItemESP() end
+    end)
+end)
+
+print("ItemESP loaded. Press F2 to toggle ON/OFF.")
+
+
+
+
+-- Script completo e autocontido (corrige erro "combat")
+-- Atenção: este script usa Drawing API e funções de movimento do mouse
+-- (mousemoverel / mousemoveabs) que dependem do executor.
+
+-- // Garantir tabela Features e defaults
+if not Features then Features = {} end
+Features.combat = Features.combat or {}
+
+local C = Features.combat
+C.targetPart = C.targetPart or "Head"
+C.predictionX = C.predictionX or 1.0
+C.predictionY = C.predictionY or 1.0
+C.closeRangeBoost = if nil then true else C.closeRangeBoost -- Lua 5.1 compat: avoid inline if; below we'll set properly
+
+-- fallback-safe defaults:
+if C.closeRangeBoost == nil then C.closeRangeBoost = true end
+if C.predictionEnabled == nil then C.predictionEnabled = true end
+if C.aimbotEnabled == nil then C.aimbotEnabled = true end
+if C.aimSmoothness == nil then C.aimSmoothness = 1.8 end
+if C.fov == nil then C.fov = 150 end
+if C.tracer == nil then C.tracer = true end
+if C.rainbowFOV == nil then C.rainbowFOV = false end
+
+-- // Serviços e variáveis
+local Players = game:GetService("Players")
+local Plrs = Players
+local LocalPlayer = Players.LocalPlayer
+local RS = game:GetService("RunService")
+local UInput = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = workspace
+
+-- Esperar Camera / PlayerCharacter se necessário
+local Cam = workspace.CurrentCamera
+if not Cam then
+    repeat RS.RenderStepped:Wait() Cam = workspace.CurrentCamera until Cam
+end
+
+-- // Constantes
+local AimbotGravity = 50
+local DefaultBulletSpeed = 2200
+
+-- // Drawing FOV Circle
+if not Drawing then
+    warn("Drawing API não encontrada. Este script requer um executor com Drawing API.")
+end
+
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Radius = C.fov
+FOVCircle.Thickness = 2
+FOVCircle.NumSides = 64
+FOVCircle.Color = Color3.fromRGB(0, 255, 0)
+FOVCircle.Transparency = 1
+FOVCircle.Filled = false
+FOVCircle.Visible = true
+
+local AimLine = nil
+
+-- // Util: mostrar notificação pequena (opcional)
+local function showNotification(text, timeSeconds)
+    local ok, playerGui = pcall(function() return LocalPlayer:WaitForChild("PlayerGui", 1) end)
+    if not ok or not playerGui then return end
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AimbotNotify"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = playerGui
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(0, 220, 0, 28)
+    label.Position = UDim2.new(0.7, 0, 0.02, 0)
+    label.BackgroundTransparency = 0.2
+    label.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    label.TextColor3 = Color3.fromRGB(255,255,255)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextSize = 14
+    label.Text = text
+    label.Parent = screenGui
+
+    spawn(function()
+        wait(timeSeconds or 1.2)
+        pcall(function() screenGui:Destroy() end)
+    end)
+end
+
+-- // Toggle Prediction com P
+UInput.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        C.predictionEnabled = not C.predictionEnabled
+        print("Prediction:", C.predictionEnabled and "ON" or "OFF")
+        showNotification("Prediction: " .. (C.predictionEnabled and "ON" or "OFF"), 1.2)
+    end
+end)
+
+-- // Função: velocidade da arma (mantida da sua versão)
+local function getEquippedBulletSpeed()
+    local player = LocalPlayer
+    if not player then return DefaultBulletSpeed end
+    local selectedObj = player:FindFirstChild("CurrentSelectedObject") and player.CurrentSelectedObject.Value
+    if typeof and typeof(selectedObj) ~= "Instance" then return DefaultBulletSpeed end
+
+    local inventorySlot = player:FindFirstChild("GunInventory") and player.GunInventory:FindFirstChild(selectedObj and selectedObj.Name or "")
+    if not inventorySlot or not inventorySlot.Value then return DefaultBulletSpeed end
+
+    local weaponName
+    if typeof(inventorySlot.Value) == "string" then
+        weaponName = inventorySlot.Value
+    elseif typeof(inventorySlot.Value) == "Instance" then
+        weaponName = tostring(inventorySlot.Value)
+    else
+        return DefaultBulletSpeed
+    end
+
+    local weaponData = ReplicatedStorage:FindFirstChild("GunData") and ReplicatedStorage.GunData:FindFirstChild(weaponName)
+    if not weaponData or not weaponData:FindFirstChild("Stats") or not weaponData.Stats:FindFirstChild("BulletSettings") then 
+        return DefaultBulletSpeed 
+    end
+
+    local bulletSpeedValue = weaponData.Stats.BulletSettings:FindFirstChild("BulletSpeed")
+    return (bulletSpeedValue and bulletSpeedValue:IsA("IntValue")) and bulletSpeedValue.Value or DefaultBulletSpeed
+end
+
+-- // WorldToScreen wrapper
+local function worldToScreen(position)
+    local screenPoint, onScreen = Cam:WorldToViewportPoint(position)
+    return Vector2.new(screenPoint.X, screenPoint.Y), onScreen
+end
+
+-- // Cálculo bullet drop
+local function calculateBulletDrop(distance, bulletSpeed)
+    if not bulletSpeed or bulletSpeed <= 0 then return 0 end
+    local travelTime = distance / bulletSpeed
+    return 0.5 * AimbotGravity * travelTime * travelTime
+end
+
+-- // Pegar todas as heads de forma robusta
+local function getAllPlayerHeads()
+    local heads = {}
+    -- Primeiro tenta workspace.Characters (alguns jogos usam isso)
+    if workspace:FindFirstChild("Characters") then
+        for _, characterModel in ipairs(workspace.Characters:GetChildren()) do
+            if characterModel:IsA("Model") then
+                local head = characterModel:FindFirstChild(C.targetPart) or characterModel:FindFirstChild("Head")
+                if head and head:IsA("BasePart") then
+                    table.insert(heads, head)
+                end
+            end
+        end
+    else
+        -- Fallback: iterar pelos players
+        for _, player in ipairs(Plrs:GetPlayers()) do
+            if player.Character and player.Character:IsA("Model") then
+                local head = player.Character:FindFirstChild("ServerColliderHead") or player.Character:FindFirstChild(C.targetPart) or player.Character:FindFirstChild("Head")
+                if head and head:IsA("BasePart") then
+                    table.insert(heads, head)
+                end
+            end
+        end
+    end
+    return heads
+end
+
+-- // Ignorar minha head
+local function findMyHeadIndex(heads)
+    local myCharacter = LocalPlayer and LocalPlayer.Character
+    if not myCharacter then return nil end
+
+    local myHead = myCharacter:FindFirstChild("ServerColliderHead") or myCharacter:FindFirstChild("Head")
+    if not myHead then return nil end
+
+    local ignoreIndex, closestDistance = nil, math.huge
+    for i, head in ipairs(heads) do
+        local ok, dist = pcall(function() return (head.Position - myHead.Position).Magnitude end)
+        if ok and dist and dist < closestDistance then
+            closestDistance = dist
+            ignoreIndex = i
+        end
+    end
+
+    return ignoreIndex
+end
+
+-- // Encontrar melhor alvo baseado no FOV (tela)
+local function findBestTarget()
+    local heads = getAllPlayerHeads()
+    local myHeadIndex = findMyHeadIndex(heads)
+
+    local mousePos = UInput:GetMouseLocation()
+    local mouseScreen = Vector2.new(mousePos.X, mousePos.Y)
+
+    local bestHead, bestScreenPos, shortestDistance = nil, nil, math.huge
+
+    for i, head in ipairs(heads) do
+        if i ~= myHeadIndex then
+            local ok, screenPos, onScreen = pcall(function() return worldToScreen(head.Position) end)
+            if ok and screenPos and onScreen then
+                local screenDistance = (screenPos - mouseScreen).Magnitude
+                if screenDistance <= C.fov and screenDistance < shortestDistance then
+                    shortestDistance = screenDistance
+                    bestHead = head
+                    bestScreenPos = screenPos
+                end
+            end
+        end
+    end
+
+    return bestHead, bestScreenPos
+end
+
+-- // Cálculo de predição (mantido lógica original com toggle)
+local function calculatePredictedPosition(targetHead, distance, bulletSpeed)
+    local headPosition = targetHead.Position
+
+    if not C.predictionEnabled then
+        return headPosition -- prediction desligada
+    end
+
+    local horizontalDistance = (Vector3.new(headPosition.X, Cam.CFrame.Position.Y, headPosition.Z) - Cam.CFrame.Position).Magnitude
+    local bulletDrop = calculateBulletDrop(horizontalDistance, bulletSpeed) * 1.4 * C.predictionY
+    local predictedOffset = Vector3.new(0, 0, 0)
+
+    for _, player in pairs(Plrs:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local playerHead = player.Character:FindFirstChild("ServerColliderHead") or player.Character:FindFirstChild("Head")
+            if playerHead and (playerHead.Position - headPosition).Magnitude < 5 then
+                local velocity = playerHead.Velocity
+                local travelTime = horizontalDistance / (bulletSpeed ~= 0 and bulletSpeed or DefaultBulletSpeed)
+
+                local predictionMultiplier = C.predictionX
+                if distance < 30 then
+                    predictionMultiplier = predictionMultiplier * 0.6
+                elseif distance < 100 then
+                    predictionMultiplier = predictionMultiplier * 0.9
+                else
+                    predictionMultiplier = predictionMultiplier * 1.2
+                end
+
+                predictedOffset = velocity * travelTime * predictionMultiplier
+                break
+            end
+        end
+    end
+
+    local finalPosition = headPosition + Vector3.new(0, bulletDrop * 1.5, 0) + predictedOffset
+
+    if C.closeRangeBoost and distance < 50 then
+        finalPosition = finalPosition + Vector3.new(0, 0.15, 0)
+    end
+
+    return finalPosition
+end
+
+-- // Executa o movimento do mouse para mirar
+local function executeAiming(targetHead)
+    if not targetHead then return end
+    if not LocalPlayer or not LocalPlayer.Character then return end
+
+    local distance = (targetHead.Position - Cam.CFrame.Position).Magnitude
+    local bulletSpeed = getEquippedBulletSpeed()
+
+    local predictedPosition = calculatePredictedPosition(targetHead, distance, bulletSpeed)
+    local screenPoint, onScreen = worldToScreen(predictedPosition)
+
+    if onScreen then
+        local mousePos = UInput:GetMouseLocation()
+        local currentMouse = Vector2.new(mousePos.X, mousePos.Y)
+        local deltaVector = screenPoint - currentMouse
+
+        local smoothingFactor = C.aimSmoothness
+        if distance < 40 then
+            smoothingFactor = smoothingFactor * 0.7
+        elseif distance > 150 then
+            smoothingFactor = smoothingFactor * 1.1
+        end
+
+        -- Tentar usar mousemoverel / mousemoveabs
+        if type(mousemoverel) == "function" then
+            mousemoverel(deltaVector.X * smoothingFactor, deltaVector.Y * smoothingFactor)
+        elseif type(mousemoveabs) == "function" then
+            -- mousemoveabs espera coordenadas absolutas na tela
+            local newX = currentMouse.X + (deltaVector.X * smoothingFactor)
+            local newY = currentMouse.Y + (deltaVector.Y * smoothingFactor)
+            pcall(function() mousemoveabs(newX, newY) end)
+        else
+            -- Sem função de mover mouse disponível
+            -- Apenas uma notificação no console
+            warn("Nenhuma função de movimento do mouse encontrada (mousemoverel/mousemoveabs). Aimbot não move o mouse.")
+        end
+    end
+end
+
+-- // Desenha/atualiza AimLine (tracer)
+local function updateAimLine()
+    if AimLine then
+        pcall(function() AimLine:Remove() end)
+        AimLine = nil
+    end
+
+    if not C.tracer then return end
+
+    local targetHead, targetScreenPos = findBestTarget()
+    if targetHead and targetScreenPos then
+        local mousePos = UInput:GetMouseLocation()
+        local mouseScreen = Vector2.new(mousePos.X, mousePos.Y)
+
+        AimLine = Drawing.new("Line")
+        AimLine.From = mouseScreen
+        AimLine.To = targetScreenPos
+        AimLine.Thickness = 2
+        AimLine.Transparency = 0.8
+        AimLine.Visible = true
+        AimLine.Color = Color3.fromRGB(0, 255, 0)
+    end
+end
+
+-- // Loop principal
+RS.RenderStepped:Connect(function()
+    if not LocalPlayer then LocalPlayer = Players.LocalPlayer end
+    local mousePos = UInput:GetMouseLocation()
+    FOVCircle.Position = Vector2.new(mousePos.X, mousePos.Y)
+    FOVCircle.Radius = C.fov
+    FOVCircle.Visible = C.aimbotEnabled
+
+    if C.rainbowFOV then
+        FOVCircle.Color = Color3.fromHSV(tick() % 5 / 5, 1, 1)
+    else
+        FOVCircle.Color = Color3.fromRGB(0, 255, 0)
+    end
+
+    updateAimLine()
+
+    -- Só funciona com botão direito pressionado
+    if C.aimbotEnabled and UInput:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        local targetHead = select(1, findBestTarget()) -- pega apenas a head
+        if targetHead then
+            executeAiming(targetHead)
+        end
+    end
+end)
+
+-- LOOTBAG ESP (toggle com L)
+-- ========================
+
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("RunService")
+local Plrs = game:GetService("Players")
+local LocalPlayer = Plrs.LocalPlayer
+local Cam = workspace.CurrentCamera
+
+local LootbagESP_Models = setmetatable({}, { __mode = "k" })
+local LootbagESP_Drawings = setmetatable({}, { __mode = "k" })
+local LootbagESP_Conns = {}
+
+local LootbagESP_Enabled = false -- estado inicial (desligado)
+
+local function isLootbag(model)
+    if not model or not model.Parent then return false end
+    if model:IsA("Model") and model.Name == "Default" then
+        for _, obj in ipairs(model:GetDescendants()) do
+            if obj:IsA("MeshPart") and string.find(obj.Name, "Meshes") and obj:FindFirstChildOfClass("SurfaceAppearance") then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function clearESP(model)
+    if LootbagESP_Drawings[model] then
+        pcall(function()
+            if LootbagESP_Drawings[model].Box then LootbagESP_Drawings[model].Box:Remove() end
+            if LootbagESP_Drawings[model].Name then LootbagESP_Drawings[model].Name:Remove() end
+        end)
+        LootbagESP_Drawings[model] = nil
+        LootbagESP_Models[model] = nil
+    end
+end
+
+local function watchModel(model)
+    if LootbagESP_Conns[model] then LootbagESP_Conns[model]:Disconnect() LootbagESP_Conns[model] = nil end
+    LootbagESP_Conns[model] = model.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            clearESP(model)
+            if LootbagESP_Conns[model] then LootbagESP_Conns[model]:Disconnect() LootbagESP_Conns[model] = nil end
+        end
+    end)
+end
+
+local function createESP(model)
+    if not model or not model.Parent then return end
+    pcall(function()
+        local box = Drawing.new("Square")
+        box.Visible = false
+        box.Thickness = 2
+        box.Color = Color3.fromRGB(200, 200, 40)
+        box.Transparency = 0.7
+        box.Filled = false
+
+        local name = Drawing.new("Text")
+        name.Size = 16
+        name.Center = true
+        name.Outline = true
+        name.Font = 2
+        name.Visible = false
+        name.Color = Color3.fromRGB(255, 255, 160)
+        name.Text = "Lootbag"
+
+        LootbagESP_Drawings[model] = {Box = box, Name = name}
+        LootbagESP_Models[model] = true
+        watchModel(model)
+    end)
+end
+
+local function updateLootbagESP()
+    if not LootbagESP_Enabled then
+        for _, visuals in pairs(LootbagESP_Drawings) do
+            if visuals.Box then visuals.Box.Visible = false end
+            if visuals.Name then visuals.Name.Visible = false end
+        end
+        return
+    end
+    if not Cam or not Cam.Parent then return end
+    local camPos = Cam.CFrame.Position
+
+    for model, visuals in pairs(LootbagESP_Drawings) do
+        if not model or not model.Parent then
+            clearESP(model)
+        else
+            local root = model:FindFirstChildWhichIsA("BasePart")
+            if root and visuals.Box and visuals.Name then
+                local pos, onScreen = Cam:WorldToViewportPoint(root.Position)
+                if onScreen and pos.Z > 0 then
+                    local dist = (camPos - root.Position).Magnitude
+                    local sz = math.clamp(700 / dist, 2, 22)
+                    visuals.Box.Size = Vector2.new(sz * 2, sz * 2)
+                    visuals.Box.Position = Vector2.new(pos.X - sz, pos.Y - sz)
+                    visuals.Box.Visible = true
+
+                    visuals.Name.Position = Vector2.new(pos.X, pos.Y - sz * 1.4)
+                    visuals.Name.Visible = true
+                    visuals.Name.Text = string.format("Lootbag (%.1f)", dist)
+                else
+                    visuals.Box.Visible = false
+                    visuals.Name.Visible = false
+                end
+            else
+                clearESP(model)
+            end
+        end
+    end
+end
+
+local function scanLootbags()
+    if not LootbagESP_Enabled then return end
+    for _, m in ipairs(workspace:GetDescendants()) do
+        if not LootbagESP_Models[m] and isLootbag(m) then
+            createESP(m)
+        end
+    end
+end
+
+local function cleanupLootbagESP()
+    for _, conn in pairs(LootbagESP_Conns) do if conn then conn:Disconnect() end end
+    for model in pairs(LootbagESP_Models) do clearESP(model) end
+end
+
+-- Toggle no L
+UIS.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == Enum.KeyCode.L then
+        LootbagESP_Enabled = not LootbagESP_Enabled
+        print("Lootbag ESP:", LootbagESP_Enabled and "ON" or "OFF")
+    end
+end)
+
+-- Remover lootbag se sumir
+LootbagESP_Conns.childRemoved = workspace.ChildRemoved:Connect(function(child)
+    if LootbagESP_Drawings[child] then clearESP(child) end
+end)
+
+-- Atualização de ESP
+LootbagESP_Conns.renderStepped = RS.RenderStepped:Connect(updateLootbagESP)
+
+-- Scan periódico
+local lastScan = 0
+LootbagESP_Conns.heartbeat = RS.Heartbeat:Connect(function()
+    if tick() - lastScan > 5 then
+        scanLootbags()
+        lastScan = tick()
+    end
+end)
+
+-- Clean up ao sair do jogo
+LootbagESP_Conns.playerRemoving = Plrs.PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then cleanupLootbagESP() end
+end)
+
+
+-- PLAYER BOX ESP (alinhado ao corpo, baseado no Skeleton ESP)
+-- ================================
+
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local Cam = Workspace.CurrentCamera
+
+local CharacterFolder = Workspace:FindFirstChild("Characters") or Workspace
+
+local bodyParts = {
+    "Head", "UpperTorso", "LowerTorso",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+
+local CharacterESPStorage = {}
+local ESPEnabled = true -- Toggle ESP
+local RenderDistance = 4000 -- Distância máxima
+
+-- Função para remover ESP de um modelo
+local function removeCharacterESP(model)
+    local esp = CharacterESPStorage[model]
+    if esp and esp.Box then
+        esp.Box:Remove()
+    end
+    CharacterESPStorage[model] = nil
+end
+
+-- Função principal de atualização do Box ESP
+local function updateCharacterBoxESP()
+    for model in pairs(CharacterESPStorage) do
+        if not model.Parent or model.Parent ~= CharacterFolder then
+            removeCharacterESP(model)
+        end
+    end
+
+    if not ESPEnabled then
+        for _, esp in pairs(CharacterESPStorage) do
+            if esp.Box then esp.Box.Visible = false end
+        end
+        return
+    end
+
+    for _, model in ipairs(CharacterFolder:GetChildren()) do
+        if model:IsA("Model") then
+            -- Pegar todos os pontos visíveis do corpo
+            local partPositions = {}
+            for _, partName in ipairs(bodyParts) do
+                local part = model:FindFirstChild(partName)
+                if part and part:IsA("BasePart") then
+                    local pos, onScreen = Cam:WorldToViewportPoint(part.Position)
+                    if onScreen then
+                        table.insert(partPositions, Vector2.new(pos.X, pos.Y))
+                    end
+                end
+            end
+
+            if #partPositions == 0 then
+                removeCharacterESP(model)
+            else
+                -- Calcular box baseado nas posições extremas
+                local minX, maxX = partPositions[1].X, partPositions[1].X
+                local minY, maxY = partPositions[1].Y, partPositions[1].Y
+                for _, pos in ipairs(partPositions) do
+                    minX = math.min(minX, pos.X)
+                    maxX = math.max(maxX, pos.X)
+                    minY = math.min(minY, pos.Y)
+                    maxY = math.max(maxY, pos.Y)
+                end
+
+                local width = maxX - minX
+                local height = maxY - minY
+                local x = minX
+                local y = minY
+
+                -- Criar box se ainda não existir
+                if not CharacterESPStorage[model] then
+                    local box = Drawing.new("Square")
+                    box.Visible = false
+                    box.Thickness = 2
+                    box.Filled = false
+                    box.Color = Color3.fromRGB(0, 255, 0)
+                    box.Transparency = 0.8
+                    CharacterESPStorage[model] = {Box = box}
+                end
+
+                local esp = CharacterESPStorage[model]
+                if esp.Box then
+                    esp.Box.Position = Vector2.new(x, y)
+                    esp.Box.Size = Vector2.new(width, height)
+                    esp.Box.Visible = true
+                end
+            end
+        end
+    end
+end
+
+-- Toggle com L
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == Enum.KeyCode.F1 then
+        ESPEnabled = not ESPEnabled
+        print("Player Box ESP:", ESPEnabled and "ON" or "OFF")
+    end
+end)
+
+-- Conexão com RenderStepped
+RunService.RenderStepped:Connect(updateCharacterBoxESP)
+
+print("Player Box ESP carregado!")
+
+-- ========================
+-- SKELETON ESP COMPLETO COM TOGGLE F1
+-- ========================
+
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local LocalPlayer = game:GetService("Players").LocalPlayer
+local Cam = Workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+
+local CharacterFolder = Workspace:FindFirstChild("Characters") or Workspace
+
+local skeletonBones = {
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "LowerTorso"},
+    {"UpperTorso", "LeftUpperArm"},
+    {"UpperTorso", "RightUpperArm"},
+    {"LowerTorso", "LeftUpperLeg"},
+    {"LowerTorso", "RightUpperLeg"},
+    {"LeftUpperArm", "LeftLowerArm"},
+    {"LeftLowerArm", "LeftHand"},
+    {"RightUpperArm", "RightLowerArm"},
+    {"RightLowerArm", "RightHand"},
+    {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LeftLowerLeg", "LeftFoot"},
+    {"RightUpperLeg", "RightLowerLeg"},
+    {"RightLowerLeg", "RightFoot"},
+}
+
+local bodyParts = {
+    "Head", "UpperTorso", "LowerTorso",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+
+local CharacterESPStorage = {}
+local ESPEnabled = true -- Ative ou desative o ESP
+local ESPMasterOff = false -- Desliga totalmente com F1
+local RenderDistance = 4000 -- Distância máxima do ESP
+
+-- Função para remover ESP de um modelo
+local function removeCharacterESP(model)
+    local esp = CharacterESPStorage[model]
+    if esp and esp.Skeleton then
+        for _, line in ipairs(esp.Skeleton) do line:Remove() end
+    end
+    CharacterESPStorage[model] = nil
+end
+
+-- Função principal de atualização do Skeleton ESP
+local function updateCharacterSkeletonESP()
+    for model in pairs(CharacterESPStorage) do
+        if not model.Parent or model.Parent ~= CharacterFolder then
+            removeCharacterESP(model)
+        end
+    end
+
+    if not ESPEnabled or ESPMasterOff then
+        for _, esp in pairs(CharacterESPStorage) do
+            for _, line in ipairs(esp.Skeleton) do line.Visible = false end
+        end
+        return
+    end
+
+    for _, model in ipairs(CharacterFolder:GetChildren()) do
+        if model:IsA("Model") then
+            local center = nil
+            for _, partName in ipairs(bodyParts) do
+                local part = model:FindFirstChild(partName)
+                if part and part:IsA("BasePart") then
+                    center = part.Position
+                    break
+                end
+            end
+            if not center then
+                removeCharacterESP(model)
+            else
+                local dist = (Cam.CFrame.Position - center).Magnitude
+                if dist > RenderDistance then
+                    removeCharacterESP(model)
+                else
+                    local _, onScreen = Cam:WorldToViewportPoint(center)
+                    if not onScreen then
+                        removeCharacterESP(model)
+                    else
+                        if not CharacterESPStorage[model] then
+                            local skeleton = {}
+                            for _ = 1, #skeletonBones do
+                                local line = Drawing.new("Line")
+                                line.Visible = false
+                                line.Color = Color3.fromRGB(255,255,255)
+                                line.Thickness = 2
+                                skeleton[#skeleton+1] = line
+                            end
+                            CharacterESPStorage[model] = { Skeleton = skeleton }
+                        end
+                        local esp = CharacterESPStorage[model]
+                        local parts = {}
+                        for _, boneName in ipairs(bodyParts) do
+                            local part = model:FindFirstChild(boneName)
+                            if part and part:IsA("BasePart") then
+                                local partPos, partOnScreen = Cam:WorldToViewportPoint(part.Position)
+                                if partOnScreen then
+                                    parts[boneName] = Vector2.new(partPos.X, partPos.Y)
+                                end
+                            end
+                        end
+                        for idx, pair in ipairs(skeletonBones) do
+                            local a, b = parts[pair[1]], parts[pair[2]]
+                            local line = esp.Skeleton[idx]
+                            if a and b and line then
+                                line.From = a
+                                line.To = b
+                                line.Visible = true
+                            elseif line then
+                                line.Visible = false
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Toggle F1
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if not gpe and input.KeyCode == Enum.KeyCode.F1 then
+        ESPMasterOff = not ESPMasterOff
+        print("Skeleton ESP Master Switch:", ESPMasterOff and "OFF" or "ON")
+    end
+end)
+
+-- Conexão com RenderStepped para atualizar ESP toda frame
+RunService.RenderStepped:Connect(updateCharacterSkeletonESP)
+
+print("Skeleton ESP carregado!")
+
+-- Script Name ESP com toggle F1
+-- Requer executor com Drawing API
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local Cam = workspace.CurrentCamera
+
+-- Configurações
+local Features = {}
+Features.visuals = {}
+Features.visuals.enabled = true
+Features.visuals.names = {}
+Features.visuals.names.enabled = true
+Features.visuals.renderDistance = 1000
+
+-- WeakTable para ESP
+local ESPStorage = setmetatable({}, { __mode = "k" })
+
+-- Função para criar Name ESP
+local function createESP(player)
+    if player == LocalPlayer then return end
+    local name = Drawing.new("Text")
+    name.Visible = false
+    name.Size = 16
+    name.Center = true
+    name.Outline = true
+    name.Color = Color3.fromRGB(0, 255, 0)
+    name.Text = player.Name
+
+    ESPStorage[player] = { Name = name }
+end
+
+-- Função para remover ESP
+local function removeESP(player)
+    local esp = ESPStorage[player]
+    if esp then
+        for _, obj in pairs(esp) do
+            pcall(function() obj:Remove() end)
+        end
+        ESPStorage[player] = nil
+    end
+end
+
+-- Atualiza todos os Name ESP
+local function updateESP()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer then 
+            if ESPStorage[player] then removeESP(player) end
+        else
+            local char = player.Character
+            local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("ServerColliderHead"))
+            if char and head then
+                local esp = ESPStorage[player]
+                if not esp then
+                    createESP(player)
+                    esp = ESPStorage[player]
+                end
+
+                local offsetY = 2.5 -- altura acima da cabeça
+                local pos, onScreen = Cam:WorldToViewportPoint(head.Position + Vector3.new(0, offsetY, 0))
+                local dist = (Cam.CFrame.Position - head.Position).Magnitude
+
+                if onScreen and dist <= Features.visuals.renderDistance then
+                    esp.Name.Visible = Features.visuals.enabled and Features.visuals.names.enabled
+                    if Features.visuals.enabled and Features.visuals.names.enabled then
+                        esp.Name.Text = player.Name
+                        esp.Name.Position = Vector2.new(pos.X, pos.Y)
+                    end
+                else
+                    esp.Name.Visible = false
+                end
+            elseif ESPStorage[player] then
+                removeESP(player)
+            end
+        end
+    end
+end
+
+-- Conexões de jogador
+Players.PlayerAdded:Connect(function(player) createESP(player) end)
+Players.PlayerRemoving:Connect(function(player) removeESP(player) end)
+
+-- Toggle F1
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.F1 then
+        Features.visuals.names.enabled = not Features.visuals.names.enabled
+        print("Name ESP:", Features.visuals.names.enabled and "ON" or "OFF")
+    end
+end)
+
+-- Loop de atualização
+RunService.RenderStepped:Connect(function()
+    if Features.visuals.enabled and Features.visuals.names.enabled then
+        updateESP()
+    else
+        for _, esp in pairs(ESPStorage) do
+            esp.Name.Visible = false
+        end
+    end
+end)
+
+print("Name ESP carregado com toggle F1!")
+
+
+-- Serviços
+local RS = game:GetService("RunService")
+local Plrs = game:GetService("Players")
+local LocalPlayer = Plrs.LocalPlayer
+local Cam = workspace.CurrentCamera
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UInput = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+-- Configuração do Inventory Viewer
+InventoryViewerConfig = InventoryViewerConfig or {
+    Enabled = false,      -- começa desligado
+    FOVRadius = 200,
+    MaxSlots = 15
+}
+
+-- Labels do UI
+local Labels = {}
+
+-- Criação da UI
+local function CreateInventoryUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "VacInventoryViewer"
+    screenGui.ResetOnSpawn = false
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent = gethui and gethui() or game:GetService("CoreGui")
+
+    local panel = Instance.new("Frame")
+    panel.Name = "Panel"
+    panel.Parent = screenGui
+    panel.AnchorPoint = Vector2.new(1, 0)
+    panel.Position = UDim2.new(1, -50, 0, 60)
+    panel.Size = UDim2.new(0, 340, 0, 0)
+    panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    panel.BackgroundTransparency = 0.18
+    panel.BorderSizePixel = 0
+    panel.ClipsDescendants = true
+    panel.Visible = false
+
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 16)
+    local stroke = Instance.new("UIStroke", panel)
+    stroke.Color = Color3.fromRGB(0, 255, 120)
+    stroke.Thickness = 3
+    stroke.Transparency = 0.13
+
+    local padding = Instance.new("UIPadding", panel)
+    padding.PaddingTop = UDim.new(0, 14)
+    padding.PaddingBottom = UDim.new(0, 14)
+    padding.PaddingLeft = UDim.new(0, 20)
+    padding.PaddingRight = UDim.new(0, 20)
+
+    local header = Instance.new("TextLabel")
+    header.Name = "Header"
+    header.Parent = panel
+    header.BackgroundTransparency = 1
+    header.Size = UDim2.new(1, 0, 0, 28)
+    header.Position = UDim2.new(0,0,0,0)
+    header.Text = ""
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 20
+    header.TextColor3 = Color3.fromRGB(0, 255, 120)
+    header.TextStrokeTransparency = 0.7
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.TextYAlignment = Enum.TextYAlignment.Top
+
+    local content = Instance.new("Frame", panel)
+    content.Name = "Content"
+    content.BackgroundTransparency = 1
+    content.Position = UDim2.new(0,0,0,30)
+    content.Size = UDim2.new(1, 0, 1, -30)
+    content.ZIndex = 2
+
+    local layout = Instance.new("UIListLayout", content)
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 8)
+    layout.Name = "UIListLayout"
+
+    -- Dragging da UI
+    local dragging, dragStart, startPos
+    panel.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = panel.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    UInput.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            panel.Position = startPos + UDim2.new(0, delta.X, 0, delta.Y)
+        end
+    end)
+
+    return {
+        gui = screenGui,
+        panel = panel,
+        header = header,
+        content = content,
+        layout = layout
+    }
+end
+
+UI = UI or CreateInventoryUI()
+
+-- Limpar painel
+local function ClearPanel()
+    for _, label in ipairs(Labels) do
+        if label then label:Destroy() end
+    end
+    Labels = {}
+end
+
+-- Adicionar slot ao painel
+local function AddSlot(text, color, isBold)
+    local label = Instance.new("TextLabel")
+    label.Parent = UI.content
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 0, 21)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextColor3 = color or Color3.fromRGB(180, 255, 180)
+    label.Font = isBold and Enum.Font.GothamBold or Enum.Font.Gotham
+    label.TextSize = 16
+    label.TextStrokeTransparency = 0.78
+    label.Text = text
+    table.insert(Labels, label)
+    return label
+end
+
+-- Atualizar tamanho do painel
+local function UpdatePanelSize()
+    local contentHeight = UI.layout.AbsoluteContentSize.Y + 30
+    local targetHeight = math.clamp(contentHeight + 20, 0, 800)
+    TweenService:Create(UI.panel, TweenInfo.new(0.23, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 340, 0, targetHeight)
+    }):Play()
+end
+
+-- Mostrar ou esconder painel
+local function ShowPanel(show)
+    UI.panel.Visible = show
+end
+
+-- Pegar nome da arma
+local function getGunDisplayName(gunInfoData, slot)
+    if gunInfoData then
+        local displayNameObj = gunInfoData:FindFirstChild("DisplayName")
+        if displayNameObj and displayNameObj.Value and displayNameObj.Value ~= "" then
+            return displayNameObj.Value
+        end
+    end
+    if slot and slot.Value and slot.Value.Name then
+        return slot.Value.Name
+    end
+    return "Unknown"
+end
+
+local function safe(t)
+    if t == nil then return "?" end
+    return tostring(t)
+end
+
+-- Pegar informações da arma
+local function GetWeaponInfo(player, slot)
+    if not slot or not slot.Value then return nil end
+    local gunData = ReplicatedStorage:FindFirstChild("GunData")
+    local gunName = slot.Value.Name
+    local gunInfoData = gunData and gunData:FindFirstChild(gunName)
+    local bullets = slot:FindFirstChild("BulletsInMagazine")
+    local reserve = slot:FindFirstChild("BulletsInReserve")
+    local magCap = gunInfoData and gunInfoData.Stats and gunInfoData.Stats:FindFirstChild("MagazineCapacity")
+    local meleeStat = gunInfoData and gunInfoData.Stats and gunInfoData.Stats:FindFirstChild("Melee")
+    local displayName = getGunDisplayName(gunInfoData, slot)
+    return {
+        name = displayName,
+        current = safe(bullets and bullets.Value),
+        capacity = safe(magCap and magCap.Value),
+        reserve = safe(reserve and reserve.Value),
+        isMelee = meleeStat and meleeStat.Value or false
+    }
+end
+
+-- Captura o estado do jogador
+local function CapturePlayerState(player)
+    if not player then return nil end
+    local state = {name = player.Name, inventory = {}}
+    local GunInventory = player:FindFirstChild("GunInventory")
+    if GunInventory then
+        for _, slot in ipairs(GunInventory:GetChildren()) do
+            local gunInfo = GetWeaponInfo(player, slot)
+            if gunInfo then
+                table.insert(state.inventory, gunInfo)
+            end
+        end
+    end
+    return state
+end
+
+-- Verifica se o estado mudou
+local function HasStateChanged(new, old)
+    if not old then return true end
+    if new.name ~= old.name then return true end
+    if #new.inventory ~= #old.inventory then return true end
+    for i, newItem in ipairs(new.inventory) do
+        local oldItem = old.inventory[i]
+        if not oldItem or newItem.name ~= oldItem.name or
+           newItem.current ~= oldItem.current or
+           newItem.reserve ~= oldItem.reserve then
+            return true
+        end
+    end
+    return false
+end
+
+-- Pega o player mais próximo do mouse
+local function GetPlayerTarget()
+    local nearestTarget = nil
+    local shortestDistance = InventoryViewerConfig.FOVRadius
+    local mousePos = UInput:GetMouseLocation()
+    for _, player in pairs(Plrs:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local head = player.Character:FindFirstChild("ServerColliderHead") or player.Character:FindFirstChild("Head")
+            if head then
+                local screenPoint, onScreen = Cam:WorldToViewportPoint(head.Position)
+                if onScreen and screenPoint.Z > 0.1 then
+                    local dist = (Vector2.new(screenPoint.X, screenPoint.Y) - Vector2.new(mousePos.X, mousePos.Y)).Magnitude
+                    if dist < shortestDistance then
+                        shortestDistance = dist
+                        nearestTarget = player
+                    end
+                end
+            end
+        end
+    end
+    return nearestTarget
+end
+
+-- Estado do painel
+local LastPanelState = {}
+local TargetPlayer = nil
+local prevTargetName = nil
+
+-- Atualiza o painel do Inventory Viewer
+local function UpdateInventoryPanel()
+    if not InventoryViewerConfig.Enabled then 
+        ShowPanel(false)
+        return
+    end
+
+    TargetPlayer = GetPlayerTarget()
+    if not TargetPlayer then
+        ClearPanel()
+        ShowPanel(false)
+        prevTargetName = nil
+        return
+    end
+
+    local forceUpdate = false
+    if prevTargetName ~= TargetPlayer.Name then
+        prevTargetName = TargetPlayer.Name
+        ClearPanel()
+        forceUpdate = true
+    end
+
+    local newState = CapturePlayerState(TargetPlayer)
+    if not newState then
+        ClearPanel()
+        ShowPanel(false)
+        return
+    end
+
+    if forceUpdate or HasStateChanged(newState, LastPanelState[TargetPlayer]) then
+        LastPanelState[TargetPlayer] = newState
+        ClearPanel()
+
+        UI.header.Text = TargetPlayer.Name .. " - Inventory"
+
+        local GunInventory = TargetPlayer:FindFirstChild("GunInventory")
+        if GunInventory then
+            local displayedSlots = 0
+            for _, slot in ipairs(GunInventory:GetChildren()) do
+                if displayedSlots < InventoryViewerConfig.MaxSlots then
+                    local gunInfo = GetWeaponInfo(TargetPlayer, slot)
+                    if gunInfo then
+                        displayedSlots = displayedSlots + 1
+                        local slotText = "Slot " .. displayedSlots .. ": " .. (gunInfo.name or "?")
+                        if gunInfo.isMelee then
+                            slotText = slotText .. " (Melee)"
+                        else
+                            slotText = slotText .. " [" .. (gunInfo.current or "?") .. "/" .. (gunInfo.capacity or "?") .. " | " .. (gunInfo.reserve or "?") .. "]"
+                        end
+                        AddSlot(slotText, Color3.fromRGB(210,220,255))
+                    end
+                end
+            end
+            if displayedSlots == 0 then
+                AddSlot("Nenhuma arma", Color3.fromRGB(200, 200, 200))
+            end
+        else
+            AddSlot("Sem inventário", Color3.fromRGB(255, 150, 150))
+        end
+
+        ShowPanel(true)
+        UpdatePanelSize()
+    end
+end
+
+-- Toggle do Inventory Viewer (F3)
+UInput.InputBegan:Connect(function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.F3 then
+        InventoryViewerConfig.Enabled = not InventoryViewerConfig.Enabled
+        ShowPanel(InventoryViewerConfig.Enabled)
+    end
+end)
+
+-- Conecta o UpdateInventoryPanel no RenderStepped
+RS.RenderStepped:Connect(UpdateInventoryPanel)
+
+-- Script corrigido: veículo ESP (toggle por F4)
+-- Mantive a estrutura original e corrigi erros, adicionei offset para ficar acima do Pivot,
+-- e alterei as cores: nome VERMELHO e studs (distância) ROSA.
+-- Cole no executor dentro do jogo.
+
+local RS = game:GetService("RunService")
+local Cam = workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+
+local NOME_MODELO_CARRO = "WorldModel"   -- Troque caso o nome do modelo seja outro
+local RENDER_DIST = 4000
+local COR_NOME = Color3.fromRGB(255, 0, 0)            -- vermelho
+local COR_DIST = Color3.fromRGB(255, 105, 180)        -- rosa (hot pink)
+local TEXTO_VEIC = "Vehicle"
+local HEIGHT_OFFSET = 5                               -- studs acima do pivot
+
+-- controla se o ESP está ativo (padrão: ligado)
+local veiculoESP_Ativo = true
+
+-- garante que a tabela exista (evita erro com ipairs/nil)
+local veiculosData = {}
+
+-- Função de atualização SEM duplicação
+local function atualizarVeiculos()
+    -- remove desenhos antigos (se houver)
+    for _, info in ipairs(veiculosData) do
+        if info.txt then pcall(function() info.txt:Remove() end) end
+        if info.dist then pcall(function() info.dist:Remove() end) end
+    end
+
+    table.clear(veiculosData)
+
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and obj.Name == NOME_MODELO_CARRO then
+            table.insert(veiculosData, {modelo = obj, txt = nil, dist = nil})
+        end
+    end
+end
+
+workspace.ChildAdded:Connect(function(c)
+    if c:IsA("Model") and c.Name == NOME_MODELO_CARRO then atualizarVeiculos() end
+end)
+workspace.ChildRemoved:Connect(function(c)
+    if c:IsA("Model") and c.Name == NOME_MODELO_CARRO then atualizarVeiculos() end
+end)
+atualizarVeiculos()
+
+local frameSkip = 0
+RS.RenderStepped:Connect(function()
+    if not veiculoESP_Ativo then
+        -- garante que tudo fique invisível quando desligado
+        for _, info in ipairs(veiculosData) do
+            if info.txt then pcall(function() info.txt.Visible = false end) end
+            if info.dist then pcall(function() info.dist.Visible = false end) end
+        end
+        return
+    end
+
+    frameSkip = (frameSkip + 1) % 2
+    if frameSkip ~= 0 then return end
+
+    -- Remove Drawings de modelos deletados
+    for i = #veiculosData, 1, -1 do
+        local info = veiculosData[i]
+        if not info.modelo or not info.modelo.Parent then
+            if info.txt then pcall(function() info.txt:Remove() end) end
+            if info.dist then pcall(function() info.dist:Remove() end) end
+            table.remove(veiculosData, i)
+        end
+    end
+
+    for _, info in ipairs(veiculosData) do
+        -- tenta pegar o pivot/posição do modelo
+        local ok, pivotCFrame = pcall(function() return info.modelo:GetPivot() end)
+        if not ok or not pivotCFrame then
+            if info.txt then info.txt.Visible = false end
+            if info.dist then info.dist.Visible = false end
+        else
+            local pivotPos = pivotCFrame.Position
+            local displayPos = pivotPos + Vector3.new(0, HEIGHT_OFFSET, 0) -- acima do pivot
+            local dist = (Cam.CFrame.Position - pivotPos).Magnitude
+            local pos2D, onscreen = Cam:WorldToViewportPoint(displayPos)
+
+            -- onScreen checa se está na tela e pos2D.Z > 0 evita objetos atrás da câmera
+            if dist > RENDER_DIST or not onscreen or pos2D.Z <= 0 then
+                if info.txt then info.txt.Visible = false end
+                if info.dist then info.dist.Visible = false end
+            else
+                -- Nome VERMELHO
+                if not info.txt then
+                    info.txt = Drawing.new("Text")
+                    info.txt.Font = 2
+                    info.txt.Size = 19
+                    info.txt.Color = COR_NOME
+                    info.txt.Center = true
+                    info.txt.Outline = true
+                end
+                info.txt.Text = TEXTO_VEIC
+                info.txt.Position = Vector2.new(pos2D.X, pos2D.Y)
+                info.txt.Visible = true
+
+                -- Distância ROSA
+                if not info.dist then
+                    info.dist = Drawing.new("Text")
+                    info.dist.Font = 1
+                    info.dist.Size = 15
+                    info.dist.Color = COR_DIST
+                    info.dist.Center = true
+                    info.dist.Outline = true
+                end
+                info.dist.Text = string.format("%dm", math.floor(dist/3.6))
+                info.dist.Position = Vector2.new(pos2D.X, pos2D.Y + 15)
+                info.dist.Visible = true
+            end
+        end
+    end
+end)
+
+-- Toggle por tecla F4
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.F4 then
+        veiculoESP_Ativo = not veiculoESP_Ativo
+        -- se acabou de desligar, esconder tudo imediatamente
+        if not veiculoESP_Ativo then
+            for _, info in ipairs(veiculosData) do
+                if info.txt then pcall(function() info.txt.Visible = false end) end
+                if info.dist then pcall(function() info.dist.Visible = false end) end
+            end
+        end
+        print("[Vehicle ESP] toggled:", veiculoESP_Ativo and "ON" or "OFF")
+    end
+end)
+
+-- Serviços
+local RunService = game:GetService("RunService")
+local workspace = game:GetService("Workspace")
+
+-- WeakTable para guardar objetos a serem removidos
+local zonesToRemove = setmetatable({}, {__mode = "v"})
+
+-- Enche a WeakTable com TOXIC_ZONE
+local TOSIC = workspace:WaitForChild("world_assets")
+                   :WaitForChild("StaticObjects")
+                   :WaitForChild("Misc")
+                   :WaitForChild("TOSIC")
+
+for _, zone in ipairs(TOSIC:GetChildren()) do
+    if zone.Name == "TOXIC_ZONE" then
+        zonesToRemove[#zonesToRemove + 1] = zone
+    end
+end
+
+-- Função para destruir os ParticleEmitter e o TOXIC_ZONE de forma segura
+local function destroyZones()
+    for i = #zonesToRemove, 1, -1 do
+        local zone = zonesToRemove[i]
+        if zone and zone.Parent then
+            -- Remove ParticleEmitters
+            for _, obj in ipairs(zone:GetDescendants()) do
+                if obj:IsA("ParticleEmitter") then
+                    obj:Destroy()
+                end
+            end
+            -- Remove o TOXIC_ZONE
+            zone:Destroy()
+            zonesToRemove[i] = nil -- limpa referência
+        end
+    end
+end
+
+-- Executa imediatamente e apenas uma vez
+RunService.Heartbeat:Connect(function()
+    destroyZones()
+end)
+
+-- Remove todas as "Leaves" em Workspace.world_assets.StaticObjects.Trees
+-- Ajuste: se preferir apenas ocultar (não destruir), mude destroyLeaves para false.
+
+local destroyLeaves = true        -- true = destroy(), false = hide (Transparency=1 + CanCollide=false)
+local watchNewTrees = true        -- true = mantém watcher para trees adicionadas futuramente
+
+local function getTreesFolder()
+    local ws = workspace
+    local a = ws:FindFirstChild("world_assets")
+    if not a then return nil end
+    local b = a:FindFirstChild("StaticObjects")
+    if not b then return nil end
+    local t = b:FindFirstChild("Trees")
+    return t
+end
+
+local function handleLeavesInstance(inst)
+    if not inst then return end
+    -- Se inst for um Model/Folder chamado Leaves, remove todo o nó; senão, se for BasePart/Mesh, trata direto.
+    if destroyLeaves then
+        pcall(function() inst:Destroy() end)
+    else
+        -- ocultar não-destrutivamente
+        pcall(function()
+            if inst:IsA("BasePart") then
+                inst.Transparency = 1
+                inst.CanCollide = false
+            else
+                -- percorre descendants e oculta partes
+                for _, d in ipairs(inst:GetDescendants()) do
+                    if d:IsA("BasePart") then
+                        d.Transparency = 1
+                        d.CanCollide = false
+                    end
+                end
+            end
+        end)
+    end
+end
+
+local function removeLeavesFromTree(tree)
+    if not tree or not tree.Parent then return end
+    -- tenta encontrar um filho chamado exatamente "Leaves"
+    local leaves = tree:FindFirstChild("Leaves")
+    if leaves then
+        handleLeavesInstance(leaves)
+    end
+    -- também varre descendants procurando por nomes contendo "leaf"
+    for _, desc in ipairs(tree:GetDescendants()) do
+        if desc and desc.Name and type(desc.Name) == "string" then
+            local lname = desc.Name:lower()
+            if lname:find("leaf") or lname:find("leaves") then
+                handleLeavesInstance(desc)
+            end
+        end
+    end
+end
+
+local function scanAllTrees()
+    local treesFolder = getTreesFolder()
+    if not treesFolder then
+        warn("[NoLeaves] pasta Trees não encontrada em Workspace.world_assets.StaticObjects")
+        return
+    end
+    for _, tree in ipairs(treesFolder:GetChildren()) do
+        removeLeavesFromTree(tree)
+    end
+end
+
+-- Execução imediata
+scanAllTrees()
+print("[NoLeaves] remoção inicial executada.")
+
+-- Opcional: watcher para novos modelos de árvore
+if watchNewTrees then
+    local treesFolder = getTreesFolder()
+    if treesFolder then
+        treesFolder.ChildAdded:Connect(function(child)
+            -- pequeno delay para garantir que content carregue
+            task.wait(0.05)
+            removeLeavesFromTree(child)
+        end)
+        print("[NoLeaves] watcher ativado (novas árvores serão processadas).")
+    end
+end
+
+
+
+
+-- FrostyHook (UI completa + segurança: weak cache, debounce, pcall, safeMode)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- remove UI antiga se existir
+if (gethui and gethui():FindFirstChild("FrostyHook")) or (LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("FrostyHook")) then
+    (gethui and gethui():FindFirstChild("FrostyHook") or LocalPlayer.PlayerGui:FindFirstChild("FrostyHook")):Destroy()
+end
+
+-- helper: converte Color3 para hex (para RichText)
+local function color3ToHex(c)
+    local r = math.floor(math.clamp(c.r,0,1) * 255)
+    local g = math.floor(math.clamp(c.g,0,1) * 255)
+    local b = math.floor(math.clamp(c.b,0,1) * 255)
+    return string.format("%02x%02x%02x", r, g, b)
+end
+
+-- Root GUI
+local Frosty = Instance.new("ScreenGui")
+Frosty.Name = "FrostyHook"
+Frosty.ResetOnSpawn = false
+Frosty.IgnoreGuiInset = true
+Frosty.Parent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
+Frosty.Enabled = false
+
+-- cores
+local BLUE = Color3.fromRGB(127,192,255)    -- destaque
+local BG = Color3.fromRGB(12,14,18)          -- painel principal
+
+-- painel principal
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.Parent = Frosty
+panel.AnchorPoint = Vector2.new(1, 0)
+panel.Position = UDim2.new(1, -50, 0, 410)
+panel.Size = UDim2.new(0, 360, 0, 380)
+panel.BackgroundColor3 = BG
+panel.BackgroundTransparency = 0.02
+panel.BorderSizePixel = 0
+panel.ClipsDescendants = true
+local corner = Instance.new("UICorner", panel)
+corner.CornerRadius = UDim.new(0, 14)
+local outerStroke = Instance.new("UIStroke", panel)
+outerStroke.Thickness = 2
+outerStroke.Transparency = 0.08
+outerStroke.Color = BLUE
+
+-- top bar
+local topBar = Instance.new("Frame", panel)
+topBar.Size = UDim2.new(1, -12, 0, 46)
+topBar.Position = UDim2.new(0, 6, 0, 6)
+topBar.BackgroundTransparency = 1
+
+local logo = Instance.new("TextLabel", topBar)
+logo.Size = UDim2.new(0, 36, 0, 36)
+logo.Position = UDim2.new(0, 0, 0, 5)
+logo.BackgroundColor3 = Color3.fromRGB(20, 30, 45)
+logo.BorderSizePixel = 0
+logo.Text = "FH"
+logo.Font = Enum.Font.GothamBold
+logo.TextSize = 18
+logo.TextColor3 = BG
+local logoCorner = Instance.new("UICorner", logo)
+logoCorner.CornerRadius = UDim.new(0, 8)
+local logoStroke = Instance.new("UIStroke", logo)
+logoStroke.Color = BLUE
+logoStroke.Thickness = 1.4
+logoStroke.Transparency = 0.06
+
+local title = Instance.new("TextLabel", topBar)
+title.BackgroundTransparency = 1
+title.Position = UDim2.new(0, 44, 0, 0)
+title.Size = UDim2.new(1, -44, 1, 0)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 17
+title.RichText = true
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextYAlignment = Enum.TextYAlignment.Center
+title.Text = '🔎 <b><font color="#' .. color3ToHex(BLUE) .. '">FrostyHook</font> GunScan</b>'
+title.TextColor3 = Color3.fromRGB(235,235,235)
+title.TextStrokeTransparency = 0.85
+
+-- content
+local content = Instance.new("Frame", panel)
+content.BackgroundTransparency = 1
+content.Position = UDim2.new(0, 10, 0, 56)
+content.Size = UDim2.new(1, -20, 1, -66)
+local contentCorner = Instance.new("UICorner", content)
+contentCorner.CornerRadius = UDim.new(0, 10)
+
+local left = Instance.new("Frame", content)
+left.Size = UDim2.new(0.62, 0, 1, 0)
+left.BackgroundTransparency = 1
+
+local right = Instance.new("Frame", content)
+right.Size = UDim2.new(0.38, 0, 1, 0)
+right.Position = UDim2.new(0.62, 8, 0, 0)
+right.BackgroundTransparency = 1
+
+-- SearchBox (apaga "TextBox" ao focar; repõe se vazio ao perder foco)
+local searchBox = Instance.new("TextBox", left)
+searchBox.Name = "SearchBox"
+searchBox.PlaceholderText = "Filter weapon..."
+searchBox.Size = UDim2.new(1, 0, 0, 30)
+searchBox.Position = UDim2.new(0, 0, 0, 0)
+searchBox.BackgroundColor3 = Color3.fromRGB(20, 26, 34)
+searchBox.BorderSizePixel = 0
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 14
+searchBox.TextColor3 = Color3.fromRGB(230,230,230)
+searchBox.ClearTextOnFocus = false
+searchBox.Text = "TextBox"
+local sCorner = Instance.new("UICorner", searchBox)
+sCorner.CornerRadius = UDim.new(0, 8)
+
+searchBox.Focused:Connect(function()
+    if searchBox.Text and tostring(searchBox.Text):lower():find("textbox") then
+        searchBox.Text = ""
+    end
+end)
+searchBox.FocusLost:Connect(function()
+    if not searchBox.Text or tostring(searchBox.Text) == "" then
+        searchBox.Text = "TextBox"
+    end
+end)
+
+-- weapon list scrolling
+local scroll = Instance.new("ScrollingFrame", left)
+scroll.Name = "WeaponList"
+scroll.Size = UDim2.new(1, 0, 0, 280)
+scroll.Position = UDim2.new(0, 0, 0, 36)
+scroll.ScrollBarThickness = 6
+scroll.BackgroundTransparency = 0.78
+scroll.BackgroundColor3 = Color3.fromRGB(10,10,10)
+scroll.BorderSizePixel = 0
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new(0,0,0,0)
+local scrollCorner = Instance.new("UICorner", scroll)
+scrollCorner.CornerRadius = UDim.new(0, 8)
+local UIListLayout = Instance.new("UIListLayout", scroll)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0,6)
+
+-- right side
+local scanButton = Instance.new("TextButton", right)
+scanButton.Size = UDim2.new(1, 0, 0, 40)
+scanButton.Position = UDim2.new(0, 0, 0, 0)
+scanButton.Text = "Scan Players"
+scanButton.Font = Enum.Font.GothamBold
+scanButton.TextSize = 16
+scanButton.TextColor3 = Color3.fromRGB(245,245,245)
+scanButton.BackgroundColor3 = BLUE
+scanButton.AutoButtonColor = true
+scanButton.BorderSizePixel = 0
+local scanCorner = Instance.new("UICorner", scanButton)
+scanCorner.CornerRadius = UDim.new(0, 8)
+
+local resultLabel = Instance.new("TextLabel", right)
+resultLabel.Name = "Result"
+resultLabel.Size = UDim2.new(1, 0, 0, 30)
+resultLabel.Position = UDim2.new(0, 0, 0, 52)
+resultLabel.BackgroundTransparency = 1
+resultLabel.Font = Enum.Font.Gotham
+resultLabel.TextSize = 14
+resultLabel.TextColor3 = BLUE
+resultLabel.RichText = true
+resultLabel.TextWrapped = true
+resultLabel.TextXAlignment = Enum.TextXAlignment.Left
+resultLabel.Text = "Ready to scan: <b><font color=\"rgb(127,192,255)\"></font></b>"
+
+local resultFrame = Instance.new("ScrollingFrame", right)
+resultFrame.Name = "ResultFrame"
+resultFrame.Size = UDim2.new(1, 0, 0, 260)
+resultFrame.Position = UDim2.new(0, 0, 0, 86)
+resultFrame.BackgroundTransparency = 1
+resultFrame.BorderSizePixel = 0
+resultFrame.ScrollBarThickness = 6
+resultFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+resultFrame.CanvasSize = UDim2.new(0,0,0,0)
+local resultLayout = Instance.new("UIListLayout", resultFrame)
+resultLayout.SortOrder = Enum.SortOrder.LayoutOrder
+resultLayout.Padding = UDim.new(0, 6)
+
+-- carrega GunData (mesma filtragem)
+local GunData = ReplicatedStorage:FindFirstChild("GunData")
+local weaponList = {}
+if GunData then
+    for _, weapon in ipairs(GunData:GetChildren()) do
+        local lowerName = weapon.Name:lower()
+        if not lowerName:match("^grenade") and not lowerName:find("hd") and not lowerName:find("old") and not lowerName:match("^classic") then
+            table.insert(weaponList, weapon.Name)
+        end
+    end
+end
+table.sort(weaponList)
+local selectedWeapon = weaponList[1] or ""
+local weaponButtons = {}
+
+-- DECLARE refreshWeaponList BEFORE conectar sinais
+local refreshWeaponList
+
+-- showResults
+local function showResults(players)
+    for _, child in ipairs(resultFrame:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+    if type(players) ~= "table" or #players == 0 then
+        resultFrame.CanvasSize = UDim2.new(0,0,0,0)
+        return
+    end
+    for i, name in ipairs(players) do
+        local label = Instance.new("TextLabel")
+        label.Parent = resultFrame
+        label.Size = UDim2.new(1,0,0,20)
+        label.BackgroundTransparency = 1
+        label.Font = Enum.Font.GothamSemibold
+        label.TextSize = 14
+        label.TextColor3 = Color3.fromRGB(200,235,255)
+        label.Text = "• " .. name
+        label.TextXAlignment = Enum.TextXAlignment.Left
+    end
+    resultFrame.CanvasSize = UDim2.new(0,0,0,resultLayout.AbsoluteContentSize.Y + 6)
+end
+
+-- refreshWeaponList implementation
+refreshWeaponList = function(filter)
+    for _, child in ipairs(scroll:GetChildren()) do
+        if not child:IsA("UIListLayout") and not child:IsA("UICorner") then
+            pcall(function() child:Destroy() end)
+        end
+    end
+    weaponButtons = {}
+    local any = false
+    for _, name in ipairs(weaponList) do
+        if not filter or filter == "" or name:lower():find(filter:lower(), 1, true) then
+            any = true
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, 0, 0, 32)
+            btn.Text = "  " .. name
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 14
+            btn.TextColor3 = Color3.fromRGB(230,230,230)
+            btn.TextXAlignment = Enum.TextXAlignment.Left
+            btn.BackgroundColor3 = (name == selectedWeapon) and Color3.fromRGB(36,102,170) or Color3.fromRGB(18,20,24)
+            btn.BorderSizePixel = 0
+            btn.Parent = scroll
+
+            local bCorner = Instance.new("UICorner", btn)
+            bCorner.CornerRadius = UDim.new(0, 6)
+
+            local stroke = Instance.new("UIStroke", btn)
+            stroke.Thickness = 1
+            stroke.Transparency = (name == selectedWeapon) and 0.25 or 0.85
+            stroke.Color = (name == selectedWeapon) and BLUE or Color3.fromRGB(30,30,30)
+
+            btn.MouseEnter:Connect(function()
+                if name ~= selectedWeapon then
+                    btn.BackgroundColor3 = Color3.fromRGB(28,30,36)
+                    stroke.Transparency = 0.45
+                end
+            end)
+            btn.MouseLeave:Connect(function()
+                if name ~= selectedWeapon then
+                    btn.BackgroundColor3 = Color3.fromRGB(18,20,24)
+                    stroke.Transparency = 0.85
+                end
+            end)
+
+            btn.MouseButton1Click:Connect(function()
+                selectedWeapon = name
+                for _, other in pairs(scroll:GetChildren()) do
+                    if other:IsA("TextButton") then
+                        other.BackgroundColor3 = Color3.fromRGB(18,20,24)
+                        local st = other:FindFirstChildOfClass("UIStroke")
+                        if st then st.Color = Color3.fromRGB(30,30,30); st.Transparency = 0.85 end
+                    end
+                end
+                btn.BackgroundColor3 = Color3.fromRGB(36,102,170)
+                local st = btn:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = BLUE; st.Transparency = 0.25 end
+                if resultLabel and resultLabel.Parent then
+                    resultLabel.Text = "Ready to scan: <b><font color=\"rgb(127,192,255)\">" .. name .. "</font></b>"
+                end
+                showResults({})
+            end)
+
+            weaponButtons[name] = btn
+        end
+    end
+
+    if not any then
+        local none = Instance.new("TextLabel")
+        none.Size = UDim2.new(1,0,0,26)
+        none.Text = "No weapon found"
+        none.Font = Enum.Font.Gotham
+        none.TextSize = 14
+        none.TextColor3 = Color3.fromRGB(200, 90, 90)
+        none.BackgroundTransparency = 1
+        none.Parent = scroll
+    end
+end
+
+-- Conecta sinal de texto (usa refreshWeaponList que já existe)
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local t = tostring(searchBox.Text or "")
+    if t:lower():find("textbox") then
+        refreshWeaponList("")
+    else
+        refreshWeaponList(t)
+    end
+end)
+
+-- inicializa lista
+local current = searchBox.Text or ""
+if tostring(current):lower():find("textbox") then
+    refreshWeaponList("")
+else
+    refreshWeaponList(current)
+end
+
+-- ===== Segurança: Weak cache + Debounce + pcall =====
+local scanCache = setmetatable({}, { __mode = "v" })  -- weak values
+local lastScanTime = 0
+local SCAN_COOLDOWN = 1 -- segundos entre scans
+local safeMode = true
+local SAFE_SCAN_LIMIT = 30 -- quando safeMode true, checa até N jogadores
+
+local function safeGetInventory(player)
+    local ok, inv = pcall(function()
+        return player:FindFirstChild("GunInventory")
+    end)
+    if ok then return inv end
+    return nil
+end
+
+local function scanWeapon(name)
+    local now = tick()
+    if now - lastScanTime < SCAN_COOLDOWN then
+        if scanCache[name] then
+            return scanCache[name]
+        else
+            return {}
+        end
+    end
+    lastScanTime = now
+
+    local foundPlayers = {}
+    local players = Players:GetPlayers()
+    local count = 0
+    for _, player in ipairs(players) do
+        if safeMode then
+            count = count + 1
+            if count > SAFE_SCAN_LIMIT then break end
+        end
+
+        local inventory = safeGetInventory(player)
+        if inventory then
+            local ok, res = pcall(function()
+                for _, item in ipairs(inventory:GetChildren()) do
+                    if item:IsA("ObjectValue") and item.Value and item.Value.Name:lower() == name:lower() then
+                        return true
+                    end
+                end
+                return false
+            end)
+            if ok and res then
+                table.insert(foundPlayers, player.Name)
+            end
+        end
+    end
+
+    scanCache[name] = foundPlayers
+    return foundPlayers
+end
+
+-- Conecta scanButton com proteção anti-multi-click e pcall
+local scanning = false
+scanButton.MouseButton1Click:Connect(function()
+    if scanning then return end
+    scanning = true
+    task.spawn(function()
+        local ok, err = pcall(function()
+            if not selectedWeapon or selectedWeapon == "" then
+                if resultLabel and resultLabel.Parent then
+                    resultLabel.Text = "Select a weapon!"
+                end
+                showResults({})
+                return
+            end
+            local found = scanWeapon(selectedWeapon)
+            if #found > 0 then
+                if resultLabel and resultLabel.Parent then
+                    resultLabel.Text = string.format("With <b><font color=\"rgb(127,192,255)\">%s</font></b>:", selectedWeapon)
+                end
+                showResults(found)
+            else
+                if resultLabel and resultLabel.Parent then
+                    resultLabel.Text = "<b><font color=\"rgb(240,90,90)\">Nobody has [" .. selectedWeapon .. "]</font></b>"
+                end
+                showResults({})
+            end
+        end)
+        if not ok then
+            if resultLabel and resultLabel.Parent then
+                resultLabel.Text = "Scan failed (try again)."
+            end
+        end
+        task.wait(SCAN_COOLDOWN)
+        scanning = false
+    end)
+end)
+
+-- drag support
+do
+    local dragging, dragStart, startPos
+    panel.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = panel.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            panel.Position = startPos + UDim2.new(0, delta.X, 0, delta.Y)
+        end
+    end)
+end
+
+-- toggle F6
+_G.VacGunScan_Toggle = function(state)
+    if state == nil then
+        Frosty.Enabled = not Frosty.Enabled
+    else
+        Frosty.Enabled = state
+    end
+end
+Frosty.Enabled = false
+UserInputService.InputBegan:Connect(function(input, gp)
+    if not gp and input.KeyCode == Enum.KeyCode.F5 then
+        _G.VacGunScan_Toggle()
+    end
+end)
+
+
+
+
