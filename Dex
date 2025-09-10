@@ -2563,7 +2563,7 @@ _G.VacGunScan_Toggle = function(state)
 end
 Frosty.Enabled = false
 UserInputService.InputBegan:Connect(function(input, gp)
-    if not gp and input.KeyCode == Enum.KeyCode.F6 then
+    if not gp and input.KeyCode == Enum.KeyCode.F5 then
         _G.VacGunScan_Toggle()
     end
 end)
